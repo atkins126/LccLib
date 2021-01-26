@@ -217,7 +217,7 @@ type
 
   { TLccTrainController }
 
-  TLccTrainController = class(TLccCanNode)
+  TLccTrainController = class(TLccNode)
   private
     FAssignedTrain: TAttachedTrain;
 
@@ -483,29 +483,29 @@ begin
        MTI_PRODUCER_IDENTIFIED_SET,
        MTI_PRODUCER_IDENTIFIED_UNKNOWN :
          begin
-            // Search Protocol is flawed, there is no way to uniquely identify this result was from my inital call
-            // I must validate the search result actually matches what I asked for .....
-           WorkerMessage.LoadTractionSearch(NULL_NODE_ID, 0, RequestedSearchData);
-           if SourceMessage.TractionSearchDecodeSearchString = WorkerMessage.TractionSearchDecodeSearchString then
+           if SourceMessage.TractionSearchIsEvent then
            begin
-             if RepliedSearchCriterialCount < Length(RepliedSearchCriteria) then
+             if SourceMessage.TractionSearchExtractSearchData = RequestedSearchData then
              begin
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].NodeID := SourceMessage.SourceID;
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].NodeAlias := SourceMessage.CAN.SourceAlias;
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].SearchData := SourceMessage.TractionSearchExtractSearchData;
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].HasSTNIP := False;
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.Manufacturer := '';
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.Owner := '';
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.Roadname := '';
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.RoadNumber := '';
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.TrainClass := '';
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.TrainName := '';
-               FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.Version := 0;
-               WorkerMessage.LoadSimpleTrainNodeIdentInfoRequest(NodeID, AliasID, RepliedSearchCriteria[RepliedSearchCriterialCount].NodeID, RepliedSearchCriteria[RepliedSearchCriterialCount].NodeAlias);
-               SendMessage(Owner, WorkerMessage);
-               Inc(FRepliedSearchCriterialCount);
-             end else
-               AdvanceToNextState;    // No more slots to hold results
+               if RepliedSearchCriterialCount < Length(RepliedSearchCriteria) then
+               begin
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].NodeID := SourceMessage.SourceID;
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].NodeAlias := SourceMessage.CAN.SourceAlias;
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].SearchData := SourceMessage.TractionSearchExtractSearchData;
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].HasSTNIP := False;
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.Manufacturer := '';
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.Owner := '';
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.Roadname := '';
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.RoadNumber := '';
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.TrainClass := '';
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.TrainName := '';
+                 FRepliedSearchCriteria[RepliedSearchCriterialCount].STNIP.Version := 0;
+                 WorkerMessage.LoadSimpleTrainNodeIdentInfoRequest(NodeID, AliasID, RepliedSearchCriteria[RepliedSearchCriterialCount].NodeID, RepliedSearchCriteria[RepliedSearchCriterialCount].NodeAlias);
+                 SendMessage(Owner, WorkerMessage);
+                 Inc(FRepliedSearchCriterialCount);
+               end else
+                 AdvanceToNextState;    // No more slots to hold results
+             end
            end
         end;
        MTI_TRACTION_SIMPLE_TRAIN_INFO_REPLY :
@@ -890,19 +890,15 @@ begin
   ProtocolSupportedProtocols.Datagram := True;
   ProtocolSupportedProtocols.EventExchange := True;
   ProtocolSupportedProtocols.SimpleNodeInfo := True;
-  ProtocolSupportedProtocols.AbbreviatedConfigurationDefinitionInfo := True;
   ProtocolSupportedProtocols.TractionControl := True;
-  ProtocolSupportedProtocols.TractionSimpleTrainNodeInfo := True;
-  ProtocolSupportedProtocols.TractionFunctionDefinitionInfo := True;
-  ProtocolSupportedProtocols.TractionFunctionConfiguration := True;
+
+  ProtocolEventsProduced.Add(EVENT_EMERGENCY_STOP, evs_InValid);
 
   ProtocolMemoryInfo.Add(MSI_CDI, True, True, True, 0, $FFFFFFFF);
   ProtocolMemoryInfo.Add(MSI_ALL, True, True, True, 0, $FFFFFFFF);
   ProtocolMemoryInfo.Add(MSI_CONFIG, True, False, True, 0, $FFFFFFFF);
   ProtocolMemoryInfo.Add(MSI_ACDI_MFG, True, True, True, 0, $FFFFFFFF);
   ProtocolMemoryInfo.Add(MSI_ACDI_USER, True, False, True, 0, $FFFFFFFF);
-  ProtocolMemoryInfo.Add(MSI_TRACTION_FDI, True, True, True, 0, $FFFFFFFF);
-  ProtocolMemoryInfo.Add(MSI_TRACTION_FUNCTION_CONFIG, True, False, True, 0, $FFFFFFFF);
 
   ProtocolMemoryOptions.WriteUnderMask := True;
   ProtocolMemoryOptions.UnAlignedReads := True;
@@ -960,17 +956,12 @@ procedure TLccTrainController.ClearAssignedTrain;
 begin
   FAssignedTrain.SearchString := '';
   FAssignedTrain.Listeners := nil;
-  {$IFNDEF DWSCRIPT}
-  FillChar(FAssignedTrain, Sizeof(AssignedTrain), 0);
-  {$ELSE}
-  //   TODO Need to do this manually in SMS
-  FAssignedTrain.NodeID := NULL_NODE_ID;
+  FAssignedTrain.NodeID := NULL_NODE_ID;  //   TODO Need to do this manually in SMS so do it forall
   FAssignedTrain.AliasID := 0;
   FAssignedTrain.RequestedSearchData := 0;
   FAssignedTrain.RepliedSearchData := 0;
   FAssignedTrain.SearchString := '';
   FAssignedTrain.Listeners := nil;
-  {$ENDIF}
 end;
 
 procedure TLccTrainController.DoControllerTakeOver(var Allow: Boolean);

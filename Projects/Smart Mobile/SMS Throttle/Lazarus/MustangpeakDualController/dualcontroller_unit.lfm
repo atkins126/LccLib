@@ -478,7 +478,7 @@ object Form1: TForm1
       Top = 9
       Width = 136
       TabOrder = 0
-      Text = '10.0.3.136'
+      Text = '10.0.3.151'
     end
     object Label1: TLabel
       Left = 32
@@ -486,38 +486,6 @@ object Form1: TForm1
       Top = 15
       Width = 177
       Caption = 'Command Station IP Address'
-      ParentColor = False
-    end
-    object Label10: TLabel
-      Left = 436
-      Height = 16
-      Top = 8
-      Width = 138
-      Caption = 'Alias Mapping Count 1:'
-      ParentColor = False
-    end
-    object LabelAliasMappingCount1: TLabel
-      Left = 584
-      Height = 16
-      Top = 8
-      Width = 8
-      Caption = '0'
-      ParentColor = False
-    end
-    object LabelAliasMappingCount2: TLabel
-      Left = 584
-      Height = 16
-      Top = 24
-      Width = 8
-      Caption = '0'
-      ParentColor = False
-    end
-    object Label11: TLabel
-      Left = 436
-      Height = 16
-      Top = 24
-      Width = 140
-      Caption = 'Alias Mapping Count 2:'
       ParentColor = False
     end
   end

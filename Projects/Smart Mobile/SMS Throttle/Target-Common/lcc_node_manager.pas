@@ -39,11 +39,9 @@ uses
   lcc_node,
   lcc_node_train,
   lcc_node_controller,
-  lcc_node_commandstation,
   lcc_defines,
   lcc_utilities,
-  lcc_node_messages,
-  lcc_alias_server;
+  lcc_node_messages;
 
 
 const
@@ -51,10 +49,16 @@ const
 
 type
 
+  // This is how the Node Manager has access to the Connection Links with needing
+  // to have access the objects associated with the Links.  The Links have a
+  // pointer to TLccNodeManager so this allows us to not have to have a single unit
+  // to have visibility back and forth.
   IHardwareConnectionManagerLink = interface
     ['{619C8E64-69C3-94A6-B6FE-B16B6CB57A45}']
     procedure SendMessage(AMessage: TLccMessage);
     function IsLccLink: Boolean;
+    function GetConnected: Boolean;
+//    if the node manager has no more active threads in its links then it should free all nodes and alias maps since it is no longer connected to any LCC networks and everythinbg is stale.
   end;
 
   INodeManager = interface
@@ -122,7 +126,7 @@ type
 
   TLccNodeManager = class(TComponent, INodeManagerCallbacks, INodeManager)
   private
-    FAliasServer: TLccAliasServer;
+    FGridConnect: Boolean;
     FOnLccNodeAliasIDChanged: TOnLccNodeMessage;
     FOnLccMessageReceive: TOnMessageEvent;
     FOnLccNodeConfigMemAddressSpaceInfoReply: TOnLccNodeConfigMemAddressSpace;
@@ -164,8 +168,8 @@ type
     FNodes: TObjectList<TLccNode>;
     {$ELSE}
     FNodes: TObjectList;
-    FWorkerMessage: TLccMessage;
     {$ENDIF}
+    FWorkerMessage: TLccMessage;
     function GetNode(Index: Integer): TLccNode;
   protected
     HardwareConnectionLinkArray: array[0..MAX_HARDWARE_CONNECTIONS] of IHardwareConnectionManagerLink;
@@ -181,7 +185,7 @@ type
     procedure DoConfigMemWriteReply(LccNode: TLccNode); virtual;
     procedure DoCreateLccNode(LccNode: TLccNode); virtual;     //*
     procedure DoLogInNode(LccNode: TLccNode); virtual;         //*
-    procedure DoLogOutNode(LccNode: TLccNode);
+    procedure DoLogOutNode(LccNode: TLccNode); virtual;
     procedure DoConsumerIdentify(LccNode: TLccNode; LccMessage: TLccMessage; var DoDefault: Boolean);
     procedure DoConsumerIdentified(LccNode: TLccNode; LccMessage: TLccMessage; var Event: TEventID; State: TEventState); virtual;
     procedure DoDatagramReply(LccNode: TLccNode); virtual;
@@ -215,6 +219,7 @@ type
   public
     // Connection Manager
 
+    property GridConnect: Boolean read FGridConnect;
     {$IFDEF DELPHI}
     property Nodes: TOBjectList<TLccNode> read FNodes write FNodes;
     {$ELSE}
@@ -222,10 +227,9 @@ type
     {$ENDIF}
     property Node[Index: Integer]: TLccNode read GetNode;
 
-    property AliasServer: TLccAliasServer read FAliasServer write FAliasServer;
     property WorkerMessage: TLccMessage read FWorkerMessage write FWorkerMessage;
 
-    constructor Create(AnOwner: TComponent); {$IFNDEF DWSCRIPT} override;  {$ENDIF}
+    constructor Create(AnOwner: TComponent; GridConnectLink: Boolean); {$IFNDEF DWSCRIPT} reintroduce; virtual; {$ENDIF}
     destructor Destroy; override;
 
     procedure Clear;
@@ -236,19 +240,14 @@ type
 
     procedure LogoutAll;
 
-    function FindOwnedNodeByDestID(LccMessage: TLccMessage): TLccNode;
-    function FindOwnedNodeBySourceID(LccMessage: TLccMessage): TLccNode;
-    function FindOwnedNodeByAlias(AnAlias: Word): TLccNode;
-    function FindPermittedCanNode: TLccCanNode;
+    function FindConnectedLink: IHardwareConnectionManagerLink;
 
     procedure ProcessMessage(LccMessage: TLccMessage);  // Takes incoming messages and dispatches them to the nodes
-    procedure SendMessage(Sender: TObject; LccMessage: TLccMessage);
+    procedure SendMessage(Sender: TObject; LccMessage: TLccMessage); // Outgoing messages are passed through this method, its address is given to Nodes and other objects that need to send messages
+    procedure ReceiveMessage(ConnectionManager: IHardwareConnectionManagerLink; ALccMessage: TLccMessage);  // Takes all incoming messages from all Connection object and dispatches them to the nodes and dispaches them to other Connections that are registered
 
-    procedure RegisterHardwareConnectionLink(AConnectionManagerLink: IHardwareConnectionManagerLink);
+    procedure RegisterHardwareConnectionLink(AConnectionManagerLink: IHardwareConnectionManagerLink); // Any Connection that needs to send/receive OpenLCB message must register with the NodeManage here
     procedure UnRegisterHardwareConnectionLink(AConnectionManagerLink: IHardwareConnectionManagerLink);
-    procedure HardwareConnectionRelayMessage(Source: IHardwareConnectionManagerLink; ALccMessage: TLccMessage);
-    procedure HardwareConnectionConnect(AConnectionManagerLink: IHardwareConnectionManagerLink);
-    procedure HardwareConnectionDisConnect(AConnectionManagerLink: IHardwareConnectionManagerLink);
 
   published
 
@@ -313,47 +312,7 @@ type
   end;
 
 
-  { TLccCanNodeManager }
-
-  TLccCanNodeManager = class(TLccNodeManager)
-  private
-    function GetCanNode(Index: Integer): TLccCanNode;
-  public
-    property CanNode[Index: Integer]: TLccCanNode read GetCanNode;
-
-    constructor Create(AnOwner: TComponent); {$IFNDEF DWSCRIPT} override;  {$ENDIF}
-    destructor Destroy; override;
-
-    function AddNode(CdiXML: string): TLccCanNode; reintroduce;
-  end;
-
 implementation
-
-{ TLccCanNodeManager }
-
-function TLccCanNodeManager.AddNode(CdiXML: string): TLccCanNode;
-begin
-  Result := TLccCanNode.Create({$IFDEF FPC}@{$ENDIF}LccMessageSendCallback, Self, CdiXML);
-  Nodes.Add(Result);
-end;
-
-constructor TLccCanNodeManager.Create(AnOwner: TComponent);
-begin
-  inherited Create(AnOwner);
-end;
-
-destructor TLccCanNodeManager.Destroy;
-begin
-  inherited;
-end;
-
-function TLccCanNodeManager.GetCanNode(Index: Integer): TLccCanNode;
-begin
-  if Index < Nodes.Count then
-    Result := Nodes[Index] as TLccCanNode
-  else
-    Result := nil;
-end;
 
 { TLccNodeManager }
 
@@ -534,7 +493,8 @@ end;
 procedure TLccNodeManager.DoTractionSpeedSet(LccNode: TLccNode;
   LccMessage: TLccMessage; IsReply: Boolean);
 begin
-
+  if Assigned(OnLccNodeTractionSpeedSet) then
+    OnLccNodeTractionSpeedSet(Self, LccNode, LccMessage, IsReply);
 end;
 
 procedure TLccNodeManager.DoTractionQueryFunction(LccNode: TLccNode;
@@ -554,19 +514,22 @@ end;
 procedure TLccNodeManager.DoTractionEmergencyStop(LccNode: TLccNode;
   LccMessage: TLccMessage; IsReply: Boolean);
 begin
-
+  if Assigned(OnLccNodeTractionEmergencyStop) then
+    OnLccNodeTractionEmergencyStop(Self, LccNode, LccMessage, IsReply);
 end;
 
 procedure TLccNodeManager.DoTractionFunctionSet(LccNode: TLccNode;
   LccMessage: TLccMessage; IsReply: Boolean);
 begin
-
+  if Assigned(OnLccNodeTractionFunctionSet) then
+    OnLccNodeTractionFunctionSet(Self, LccNode, LccMessage, IsReply);
 end;
 
 procedure TLccNodeManager.DoTractionListenerConfig(LccNode: TLccNode;
   LccMessage: TLccMessage; IsReply: Boolean);
 begin
-
+  if Assigned(OnLccNodeTractionListenerConfig) then
+    OnLccNodeTractionListenerConfig(Self, LccNode, LccMessage, IsReply);
 end;
 
 procedure TLccNodeManager.DoTractionManage(LccNode: TLccNode;
@@ -596,28 +559,7 @@ begin
   end;
 end;
 
-function TLccNodeManager.FindOwnedNodeByAlias(AnAlias: Word): TLccNode;
-var
-  i: Integer;
-begin
-  Result := nil;
-  i := 0;     // Cheap, slow linear search for now
-
-  while i < Nodes.Count do
-  begin
-    if Nodes[i] is TLccCanNode then
-    begin
-      if TLccCanNode(Nodes[i]).AliasID = AnAlias then
-      begin
-        Result := TLccNode(Nodes[i]);
-        Break;
-      end;
-      Inc(i)
-    end
-  end;
-end;
-
-constructor TLccNodeManager.Create(AnOwner: TComponent);
+constructor TLccNodeManager.Create(AnOwner: TComponent; GridConnectLink: Boolean);
 begin
   {$IFDEF DWSCRIPT}
     inherited Create;
@@ -631,28 +573,25 @@ begin
     {$ENDIF}
     FNodes.OwnsObjects := False;
   {$ENDIF}
-
-  FAliasServer := TLccAliasServer.Create;
+  FGridConnect := GridConnectLink;
   FWorkerMessage := TLccMessage.Create;
-
 end;
 
 function TLccNodeManager.AddNode(CdiXML: string; AutoLogin: Boolean): TLccNode;
 begin
-  Result := TLccNode.Create({$IFDEF FPC}@{$ENDIF}LccMessageSendCallback, Self, CdiXML);
+  Result := TLccNode.Create({$IFDEF FPC}@{$ENDIF}LccMessageSendCallback, Self, CdiXML, GridConnect);
   Nodes.Add(Result);
   DoCreateLccNode(Result);
   if AutoLogin then
     Result.Login(NULL_NODE_ID);
 end;
 
-function TLccNodeManager.AddNodeByClass(CdiXML: string;
-  NodeClass: TLccNodeClass; AutoLogin: Boolean): TLccNode;
+function TLccNodeManager.AddNodeByClass(CdiXML: string; NodeClass: TLccNodeClass; AutoLogin: Boolean): TLccNode;
 begin
   Result := nil;
   if Assigned(NodeClass) then
   begin
-    Result := NodeClass.Create({$IFDEF FPC}@{$ENDIF}LccMessageSendCallback, Self, CdiXML);
+    Result := NodeClass.Create({$IFDEF FPC}@{$ENDIF}LccMessageSendCallback, Self, CdiXML, GridConnect);
     Nodes.Add(Result);
     DoCreateLccNode(Result);
     if AutoLogin then
@@ -665,7 +604,6 @@ begin
   LogoutAll;
   Clear;
   FNodes.Free;
-  FreeAndNil(FAliasServer);
   FreeAndNil(FWorkerMessage);
   inherited Destroy;
 end;
@@ -680,61 +618,6 @@ begin
       TObject( FNodes[i]).Free;
   finally
     Nodes.Clear;
-  end;
-end;
-
-function TLccNodeManager.FindOwnedNodeByDestID(LccMessage: TLccMessage): TLccNode;
-var
-  i: Integer;
-begin
-  Result := nil;
-  i := 0;     // Cheap, slow linear search for now
-  while i < Nodes.Count do
-  begin
-    if TLccNode(Nodes[i]).IsNode(LccMessage, ntt_Dest) then
-    begin
-      Result := TLccNode(Nodes[i]);
-      Break;
-    end;
-    Inc(i)
-  end;
-end;
-
-function TLccNodeManager.FindOwnedNodeBySourceID(LccMessage: TLccMessage): TLccNode;
-var
-  i: Integer;
-begin
-  Result := nil;
-  i := 0;     // Cheap, slow linear search for now
-  while i < Nodes.Count do
-  begin
-    if TLccNode(Nodes[i]).IsNode(LccMessage, ntt_Source) then
-    begin
-      Result := TLccNode(Nodes[i]);
-      Break;
-    end;
-    Inc(i)
-  end;
-end;
-
-function TLccNodeManager.FindPermittedCanNode: TLccCanNode;
-var
-  i: Integer;
-begin
-  Result := nil;
-  i := 0;     // Cheap, slow linear search for now
-
-  while i < Nodes.Count do
-  begin
-    if Nodes[i] is TLccCanNode then
-    begin
-      if TLccCanNode(Nodes[i]).Permitted then
-      begin
-        Result := TLccCanNode(Nodes[i]);
-        Break;
-      end;
-      Inc(i)
-    end
   end;
 end;
 
@@ -762,6 +645,20 @@ begin
   end;
 end;
 
+function TLccNodeManager.FindConnectedLink: IHardwareConnectionManagerLink;
+var
+  i: Integer;
+begin
+  Result := nil;
+  i := 0;
+  while (i < HardwareConnectionConnectedCount) and not Assigned(Result) do
+  begin
+    if HardwareConnectionLinkArray[i].IsLccLink and HardwareConnectionLinkArray[i].GetConnected then
+      Result := HardwareConnectionLinkArray[i];
+    Inc(i);
+  end;
+end;
+
 procedure TLccNodeManager.ProcessMessage(LccMessage: TLccMessage);
 var
   i: Integer;
@@ -773,65 +670,9 @@ end;
 
 procedure TLccNodeManager.SendMessage(Sender: TObject; LccMessage: TLccMessage);
 var
-  i, MapIndex: Integer;
-  Map: TLccAliasMap;
-  WorkerCanNode: TLccCanNode;
+  i: Integer;
 begin
   // Send the message to the wire
-
-  // TODO......
-  // Here is where we should look for matches in the Alias Server and queue the messages if not found
-  // then send a AME to that node.  Once the AMR comes back we can resend it.
-  // Begs the question who owns the Alias Server????
-
-  // Received a message, see if it is an alias we need to save (eventually for now save them all)
-  // The underlying assumption in this is that we have our own nodes and any incoming nodes under control
-  // through the first if statement.
-
-  if LccMessage.IsCAN then
-  begin
-    case LccMessage.CAN.MTI of
-      MTI_CAN_AMR : AliasServer.RemoveMapping(LccMessage.CAN.SourceAlias);
-      MTI_CAN_AMD : AliasServer.ForceMapping(LccMessage.SourceID, LccMessage.CAN.SourceAlias)
-    end;
-  end else
-  begin
-    if LccMessage.HasDestination then
-    begin
-      // Assumption is we have our own nodes covered
-      if not Assigned(FindOwnedNodeByAlias(LccMessage.CAN.SourceAlias)) then
-      begin
-        Map := AliasServer.FindInAliasSortedMap(LccMessage.CAN.SourceAlias, MapIndex);
-        if not Assigned(Map) then
-        begin
-           WorkerCanNode := FindPermittedCanNode;
-           if Assigned(WorkerCanNode) then
-           begin
-              WorkerMessage.LoadAME(WorkerCanNode.NodeID, WorkerCanNode.AliasID, LccMessage.SourceID);
-              SendMessage(Self, WorkerMessage);
-
-              // Need to store the original message and send it later after the AMD returns
-           end;
-        end;
-      end;
-      // Assumption is we have our own nodes covered
-      if not Assigned(FindOwnedNodeByAlias(LccMessage.CAN.DestAlias)) then
-      begin
-        Map := AliasServer.FindInAliasSortedMap(LccMessage.CAN.DestAlias, MapIndex);
-        if not Assigned(Map) then
-        begin
-           WorkerCanNode := FindPermittedCanNode;
-           if Assigned(WorkerCanNode) then
-           begin
-              WorkerMessage.LoadAME(WorkerCanNode.NodeID, WorkerCanNode.AliasID, LccMessage.DestID);
-              SendMessage(Self, WorkerMessage);
-
-              // Need to store the original message and send it later after the AMD returns
-           end;
-        end;
-      end;
-    end
-  end;
 
   // Emumerate all Hardware Connections and pass on the message to send
   for i := 0 to HardwareConnectionLinkCount - 1 do
@@ -854,6 +695,20 @@ begin
 
   // Allow app to see it
   DoLccMessageSend(Sender, LccMessage);
+end;
+
+procedure TLccNodeManager.ReceiveMessage(ConnectionManager: IHardwareConnectionManagerLink; ALccMessage: TLccMessage);
+var
+  i: Integer;
+begin
+  // This message came in through a hardware connection so relay it out to the other connections
+  for i := 0 to HardwareConnectionLinkCount - 1 do
+  begin
+    if (HardwareConnectionLinkArray[i].IsLccLink) and (HardwareConnectionLinkArray[i] <> ConnectionManager)  then
+      HardwareConnectionLinkArray[i].SendMessage(ALccMessage);
+  end;
+
+  ProcessMessage(ALccMessage);
 end;
 
 procedure TLccNodeManager.LccMessageSendCallback(Sender: TObject; LccMessage: TLccMessage);
@@ -881,30 +736,6 @@ begin
     end;
   end;
 end;
-
-procedure TLccNodeManager.HardwareConnectionRelayMessage(Source: IHardwareConnectionManagerLink; ALccMessage: TLccMessage);
-var
-  i: Integer;
-begin
-  for i := 0 to HardwareConnectionLinkCount - 1 do
-  begin
-    if (HardwareConnectionLinkArray[i].IsLccLink) and (HardwareConnectionLinkArray[i] <> Source)  then
-      HardwareConnectionLinkArray[i].SendMessage(ALccMessage);
-  end;
-
-  ProcessMessage(ALccMessage);
-end;
-
-procedure TLccNodeManager.HardwareConnectionConnect(AConnectionManagerLink: IHardwareConnectionManagerLink);
-begin
-  Inc(HardwareConnectionConnectedCount);
-end;
-
-procedure TLccNodeManager.HardwareConnectionDisConnect(AConnectionManagerLink: IHardwareConnectionManagerLink);
-begin
-  Dec(HardwareConnectionConnectedCount);
-end;
-
 
 
 initialization

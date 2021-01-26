@@ -37,7 +37,7 @@ type
   TFormTrainController = class(TForm)
     ButtonReleaseTrain: TButton;
     ButtonHammerTest: TButton;
-    ButtonThrottleAssignAddress: TButton;
+    ButtonAssignTrain: TButton;
     ButtonThrottleConnectAndLogin: TButton;
     CheckBoxThrottleLocalIP: TCheckBox;
     Edit1: TEdit;
@@ -86,7 +86,8 @@ type
     ToggleBoxThrottleReverse: TToggleBox;
     TrackBarThrottleSpeed: TTrackBar;
     procedure ButtonHammerTestClick(Sender: TObject);
-    procedure ButtonThrottleAssignAddressClick(Sender: TObject);
+    procedure ButtonReleaseTrainClick(Sender: TObject);
+    procedure ButtonAssignTrainClick(Sender: TObject);
     procedure ButtonThrottleConnectAndLoginClick(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: boolean);
     procedure FormCreate(Sender: TObject);
@@ -108,9 +109,11 @@ type
   private
     FControllerNode: TLccTrainController;
   protected
+    procedure OnControllerNodeTrainAssigned(Sender: TLccNode; Reason: TControllerTrainAssignResult);
+    procedure OnControllerNodeTrainReleased(Sender: TLccNode);
   public
     EthernetClient: TLccEthernetClient;
-    NodeManager: TLccCanNodeManager;
+    NodeManager: TLccNodeManager;
 
     property ControllerNode: TLccTrainController read FControllerNode write FControllerNode;
 
@@ -132,7 +135,7 @@ implementation
 
 { TFormTrainController }
 
-procedure TFormTrainController.ButtonThrottleAssignAddressClick(Sender: TObject);
+procedure TFormTrainController.ButtonAssignTrainClick(Sender: TObject);
 var
   TrackProtocolFlags: Word;  // 5 bits
 begin
@@ -195,30 +198,43 @@ begin
   end;
 end;
 
+procedure TFormTrainController.ButtonReleaseTrainClick(Sender: TObject);
+begin
+  if Assigned(ControllerNode) then
+    ControllerNode.ReleaseTrain;
+end;
+
 procedure TFormTrainController.ButtonThrottleConnectAndLoginClick(Sender: TObject);
 var
   LocalInfo: TLccEthernetConnectionInfo;
 begin
   LocalInfo := TLccEthernetConnectionInfo.Create;
   try
-    LocalInfo.ListenerPort := 12021;
     if EthernetClient.Connected then
     begin
       NodeManager.LogoutAll;
       EthernetClient.CloseConnection(nil);
       ButtonThrottleConnectAndLogin.Caption := 'Connect and Login';
       CheckBoxThrottleLocalIP.Enabled := True;
+      ButtonAssignTrain.Enabled := True;
+      ButtonReleaseTrain.Enabled := False;
     end else
     begin
       LocalInfo.AutoResolveIP := False;
+
+      LocalInfo.ListenerPort := 12021;
       if CheckBoxThrottleLocalIP.Checked then
         LocalInfo.ListenerIP := '127.0.0.1'
       else
         LocalInfo.ListenerIP := Edit1.Text;
+      LocalInfo.GridConnect := True;
 
       EthernetClient.OpenConnection(LocalInfo);
       ButtonThrottleConnectAndLogin.Caption := 'Disconnect';
       CheckBoxThrottleLocalIP.Enabled := False;
+
+      ButtonAssignTrain.Enabled := True;
+      ButtonReleaseTrain.Enabled := False;
     end;
   finally
     LocalInfo.Free;
@@ -239,12 +255,11 @@ end;
 procedure TFormTrainController.FormCreate(Sender: TObject);
 begin
   // throttle node
-  NodeManager := TLccCanNodeManager.Create(nil);
+  NodeManager := TLccNodeManager.Create(nil, True);
   NodeManager.OnLccNodeAliasIDChanged := @OnNodeManagerAliasChange;
   NodeManager.OnLccNodeIDChanged := @OnNodeManagerIDChange;
 
   EthernetClient := TLccEthernetClient.Create(nil, NodeManager);
-  EthernetClient.Gridconnect := True;
   EthernetClient.OnConnectionStateChange := @OnClientServerConnectionChange;
   EthernetClient.OnErrorMessage := @OnClientServerErrorMessage;
 end;
@@ -315,20 +330,33 @@ end;
 
 procedure TFormTrainController.OnClientServerConnectionChange(Sender: TObject; Info: TLccHardwareConnectionInfo);
 begin
-  case (Info as TLccEthernetConnectionInfo).ConnectionState of
-    ccsClientConnecting : LabelThrottleIPAddress.Caption    := 'IP Address: Connecting';
-    ccsClientConnected  :
-      begin
-        LabelThrottleIPAddress.Caption    := 'IP Address: ' + (Info as TLccEthernetConnectionInfo).ClientIP + ':' + IntToStr((Info as TLccEthernetConnectionInfo).ClientPort);
-        ControllerNode := NodeManager.AddNodeByClass('', TLccTrainController, True) as TLccTrainController;
-      end;
-    ccsClientDisconnecting :
-      begin
-        NodeManager.Clear;   // Logout
-        ControllerNode := nil;
-        LabelThrottleIPAddress.Caption := 'IP Address: Disconnecting';
-      end;
-    ccsClientDisconnected : LabelThrottleIPAddress.Caption  := 'IP Address: Disconnected';
+  if Sender is TLccConnectionThread then
+  begin
+    case Info.ConnectionState of
+      lcsConnecting :
+        begin
+          LabelThrottleIPAddress.Caption    := 'IP Address: Connecting';
+        end;
+     lcsConnected :
+        begin
+          LabelThrottleIPAddress.Caption    := 'IP Address: ' + (Info as TLccEthernetConnectionInfo).ClientIP + ':' + IntToStr((Info as TLccEthernetConnectionInfo).ClientPort);
+          ControllerNode := NodeManager.AddNodeByClass('', TLccTrainController, True) as TLccTrainController;
+          ControllerNode.OnTrainAssigned := @OnControllerNodeTrainAssigned;
+          ControllerNode.OnTrainReleased := @OnControllerNodeTrainReleased;
+        end;
+      lcsDisconnecting :
+        begin
+          NodeManager.Clear;   // Logout
+          ControllerNode := nil;
+          ButtonAssignTrain.Enabled := True;
+          ButtonReleaseTrain.Enabled := False;
+          LabelThrottleIPAddress.Caption := 'IP Address: Disconnecting';
+        end;
+      lcsDisconnected :
+        begin
+          LabelThrottleIPAddress.Caption  := 'IP Address: Disconnected';
+        end;
+    end;
   end;
 end;
 
@@ -346,7 +374,7 @@ end;
 
 procedure TFormTrainController.OnNodeManagerAliasChange(Sender: TObject; LccSourceNode: TLccNode);
 begin
-  LabelThrottleAliasID.Caption := 'AliasID: ' + (LccSourceNode as TLccCanNode).AliasIDStr;
+  LabelThrottleAliasID.Caption := 'AliasID: ' + LccSourceNode.AliasIDStr;
 end;
 
 procedure TFormTrainController.ToggleBoxThrottleForwardChange(Sender: TObject);
@@ -362,6 +390,31 @@ end;
 procedure TFormTrainController.TrackBarThrottleSpeedChange(Sender: TObject);
 begin
   ControllerNode.Speed := TrackBarThrottleSpeed.Position;
+end;
+
+procedure TFormTrainController.OnControllerNodeTrainAssigned(Sender: TLccNode; Reason: TControllerTrainAssignResult);
+begin
+  case Reason of
+    tarAssigned :
+      begin
+        ButtonAssignTrain.Enabled := False;
+        ButtonReleaseTrain.Enabled := True;
+      end;
+    tarFailTrainRefused :
+      begin
+
+      end;
+    tarFailControllerRefused :
+      begin
+
+      end;
+  end;
+end;
+
+procedure TFormTrainController.OnControllerNodeTrainReleased(Sender: TLccNode);
+begin
+  ButtonAssignTrain.Enabled := True;
+  ButtonReleaseTrain.Enabled := False;
 end;
 
 end.

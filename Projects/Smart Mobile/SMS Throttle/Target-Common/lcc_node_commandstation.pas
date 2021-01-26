@@ -70,26 +70,25 @@ const
        		  '</string>'+
        	  '</group>'+
          '</segment>'+
-  '</cdi>');
+  '</cdi>'
+  );
 
 type
 
   { TLccCommandStationNode }
 
-  TLccCommandStationNode = class(TLccCanNode)
+  TLccCommandStationNode = class(TLccNode)
   protected
-
-    procedure Creating; override;
     function GetCdiFile: string; override;
     procedure BeforeLogin; override;
 
   public
 
     destructor Destroy; override;
-    function AddTrain(ARoadName, ARoadNumber: string; ADccAddress: Word; ALongAddress: Boolean; ASpeedStep: TLccDccSpeedStep): TLccTrainCanNode;
+    function AddTrain(ARoadName, ARoadNumber: string; ADccAddress: Word; ALongAddress: Boolean; ASpeedStep: TLccDccSpeedStep): TLccTrainNode;
     procedure ClearTrains;
-    function FindTrainByLccNodeID(ANodeID: TNodeID): TLccTrainCanNode;
-    function FindTrainByDccAddress(DccAddress: Word; IsLongAddress: Boolean): TLccTrainCanNode;
+    function FindTrainByLccNodeID(ANodeID: TNodeID): TLccTrainNode;
+    function FindTrainByDccAddress(DccAddress: Word; IsLongAddress: Boolean): TLccTrainNode;
     function ProcessMessage(SourceMessage: TLccMessage): Boolean; override;
   end;
 
@@ -103,9 +102,9 @@ uses
 
 function TLccCommandStationNode.AddTrain(ARoadName, ARoadNumber: string;
   ADccAddress: Word; ALongAddress: Boolean; ASpeedStep: TLccDccSpeedStep
-  ): TLccTrainCanNode;
+  ): TLccTrainNode;
 begin
-  Result := (NodeManager as INodeManager).AddNodeByClass('', TLccTrainCanNode, False) as TLccTrainCanNode;
+  Result := (NodeManager as INodeManager).AddNodeByClass('', TLccTrainNode, False) as TLccTrainNode;
   if Assigned(Result) then
   begin
     Result.Name := ARoadName;
@@ -122,7 +121,9 @@ begin
   ProtocolSupportedProtocols.Datagram := True;
   ProtocolSupportedProtocols.EventExchange := True;
   ProtocolSupportedProtocols.SimpleNodeInfo := True;
-  ProtocolSupportedProtocols.AbbreviatedConfigurationDefinitionInfo := True;
+  ProtocolSupportedProtocols.TractionControl := True;
+
+  ProtocolEventConsumed.Add(EVENT_EMERGENCY_STOP, evs_InValid);
 
   ProtocolMemoryInfo.Add(MSI_CDI, True, True, True, 0, $FFFFFFFF);
   ProtocolMemoryInfo.Add(MSI_ALL, True, True, True, 0, $FFFFFFFF);
@@ -155,7 +156,7 @@ begin
   LocalNodeManager := NodeManager as INodeManager;
   for i := LocalNodeManager.GetNodeCount - 1 downto 0 do
    begin
-     if LocalNodeManager.GetNode(i) is TLccTrainCanNode then
+     if LocalNodeManager.GetNode(i) is TLccTrainNode then
      begin
        LocalNode := LocalNodeManager.ExtractNode(i);
        LocalNode.Free;
@@ -163,29 +164,24 @@ begin
    end;
 end;
 
-procedure TLccCommandStationNode.Creating;
-begin
-  inherited Creating;
-end;
-
 destructor TLccCommandStationNode.Destroy;
 begin
   inherited Destroy;
 end;
 
-function TLccCommandStationNode.FindTrainByDccAddress(DccAddress: Word; IsLongAddress: Boolean): TLccTrainCanNode;
+function TLccCommandStationNode.FindTrainByDccAddress(DccAddress: Word; IsLongAddress: Boolean): TLccTrainNode;
 var
   i: Integer;
   LocalNodeManager: INodeManager;
-  TempTrain: TLccTrainCanNode;
+  TempTrain: TLccTrainNode;
 begin
   Result := nil;
   LocalNodeManager := NodeManager as INodeManager;
   for i := 0 to LocalNodeManager.GetNodeCount - 1 do
    begin
-     if LocalNodeManager.GetNode(i) is TLccTrainCanNode then
+     if LocalNodeManager.GetNode(i) is TLccTrainNode then
      begin
-       TempTrain := LocalNodeManager.GetNode(i) as TLccTrainCanNode;
+       TempTrain := LocalNodeManager.GetNode(i) as TLccTrainNode;
        if (DccAddress = TempTrain.DccAddress) and (IsLongAddress = TempTrain.DccLongAddress) then
        begin
          Result := TempTrain;
@@ -195,19 +191,19 @@ begin
    end;
 end;
 
-function TLccCommandStationNode.FindTrainByLccNodeID(ANodeID: TNodeID): TLccTrainCanNode;
+function TLccCommandStationNode.FindTrainByLccNodeID(ANodeID: TNodeID): TLccTrainNode;
 var
   i: Integer;
   LocalNodeManager: INodeManager;
-  LocalTrainNode: TLccTrainCanNode;
+  LocalTrainNode: TLccTrainNode;
 begin
   Result := nil;
   LocalNodeManager := NodeManager as INodeManager;
   for i := 0 to LocalNodeManager.GetNodeCount - 1 do
    begin
-     if LocalNodeManager.GetNode(i) is TLccTrainCanNode then
+     if LocalNodeManager.GetNode(i) is TLccTrainNode then
      begin
-       LocalTrainNode := LocalNodeManager.GetNode(i) as TLccTrainCanNode;
+       LocalTrainNode := LocalNodeManager.GetNode(i) as TLccTrainNode;
        if EqualNodeID(ANodeID, LocalTrainNode.NodeID, False) then
        begin
          Result := LocalTrainNode;
@@ -231,26 +227,15 @@ var
   {$ELSE}
   SearchDccAddress: LongInt;
   {$ENDIF}
-  ForceAllocate, ExactMatchOnly, MatchAddressOnly, LongAddressOnly, IsDCC: Boolean;
-  ATrain: TLccTrainCanNode;
+  LongAddressOnly, IsDCC: Boolean;
+  ATrain: TLccTrainNode;
   ReturnEvent: TEventID;
-  TrackProtocolFlags: Byte;
-  SearchData: DWORD;
-  ANodeID: TNodeID;
 begin
   Result := inherited ProcessMessage(SourceMessage);
-
-   // We only are dealing with messages with destinations for us from here on
-  if SourceMessage.HasDestination then
-  begin
-    if not IsDestinationEqual(SourceMessage) then
-      Exit;
-  end;
 
   case SourceMessage.MTI of
      MTI_INITIALIZATION_COMPLETE :
       begin  // Need to wait for new trains to fully initalize before returning from the Traction Search Event........
-        ANodeID := NULL_NODE_ID;
         ATrain := FindTrainByLccNodeID(SourceMessage.SourceID);
         if Assigned(ATrain) then
         begin
@@ -258,6 +243,18 @@ begin
           WorkerMessage.LoadProducerIdentified(ATrain.NodeID, ATrain.AliasID, ReturnEvent, evs_Valid);
           SendMessageFunc(ATrain, WorkerMessage);
         end
+      end;
+    MTI_PRODUCER_IDENTIFIED_CLEAR,
+    MTI_PRODUCER_IDENTIFIED_SET,
+    MTI_PRODUCER_IDENTIFIED_UNKNOWN :
+      begin
+        if SourceMessage.TractionSearchIsEvent then    // Is the the event for for traction search?
+        begin
+          // Following the spec to the letter the Train would have responed (if it existed) and
+          // then I would cancel it here.
+          // I see no reason why the CS can't pretend to be the Train as in the code below as
+          // long as it replys with the Trains NodeID and Alias....
+        end;
       end;
     MTI_PRODUCER_IDENDIFY :
       begin
@@ -287,32 +284,21 @@ begin
 
             if IsDCC then
             begin
-              // Create an Event that contains what we actually created from the search parameters
-              ForceAllocate := SourceMessage.TractionSearchIsForceAllocate;
-              ExactMatchOnly := SourceMessage.TractionSearchIsExactMatchOnly;
-              MatchAddressOnly := SourceMessage.TractionSearchIsAddressMatchOnly;
-              TrackProtocolFlags := SourceMessage.TractionSearchEncodeNMRA(LongAddressOnly, NMRA_SpeedStep, ForceAllocate, ExactMatchOnly, MatchAddressOnly);
-              WorkerMessage.TractionSearchEncodeSearchString(SearchStr, TrackProtocolFlags, SearchData);
-              WorkerMessage.LoadTractionSearch(NodeID, AliasID, SearchData);
-              ReturnEvent := WorkerMessage.ExtractDataBytesAsEventID(0);
-
               // Look for an existing Train
               ATrain := FindTrainByDccAddress(SearchDccAddress, LongAddressOnly);
+              ReturnEvent := SourceMessage.ExtractDataBytesAsEventID(0); // Return the exact same event
 
-              if (ATrain = nil) and ForceAllocate then
+              if Assigned(ATrain) then
+              begin
+                WorkerMessage.LoadProducerIdentified(ATrain.NodeID, ATrain.AliasID, ReturnEvent, evs_Valid);
+                SendMessageFunc(ATrain, WorkerMessage);      // Need to send the train for this one
+              end else
+              if SourceMessage.TractionSearchIsForceAllocate then
               begin
                 ATrain := AddTrain('New ATrain', SearchStr, SearchDccAddress, LongAddressOnly, NMRA_SpeedStep);
-                ATrain.SearchEvent := ReturnEvent;
+                ATrain.SearchEvent := ReturnEvent; // Store to send later as we don't have an alias or a login for the node yet
                 ATrain.Login(NULL_NODE_ID);
-                // Alias will change
-              end else
-              begin  // Send back the existing node
-                if Assigned(ATrain) then
-                begin
-                  WorkerMessage.LoadProducerIdentified(ATrain.NodeID, ATrain.AliasID, ReturnEvent, evs_Valid);
-                  SendMessageFunc(ATrain, WorkerMessage);      // Need to send the train for this one
-                end
-              end;
+              end
             end
           end
         end;

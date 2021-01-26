@@ -27,6 +27,8 @@ uses
   lcc_protocol_traction_simpletrainnodeinfo,
   lcc_node_controller,
   lcc_node_train,
+  lcc_common_classes,
+  lcc_ethernet_common,
   lcc_math_float16, Data.DB, Datasnap.DBClient, System.Rtti,
   System.Bindings.Outputs, Fmx.Bind.Editors, Data.Bind.EngExt,
   Fmx.Bind.DBEngExt, Data.Bind.Components, Data.Bind.DBScope;
@@ -216,7 +218,6 @@ type
     procedure SpeedButtonEditTrainClick(Sender: TObject);
   private
     FNodeManager: TLccCanNodeManager;
-    FEthernetServer: TLccEthernetServer;
     FEthernetClient: TLccEthernetClient;
     FOpenLcbSettings: TOpenLcbSettings;
     FNodeID: string;
@@ -225,8 +226,8 @@ type
     { Private declarations }
   protected
     // Client/Server Callbacks
-    procedure OnClientConnectionStateChange(Sender: TObject; EthernetRec: TLccEthernetRec);
-    procedure OnClientErrorMessage(Sender: TObject; EthernetRec: TLccEthernetRec);
+    procedure OnClientConnectionStateChange(Sender: TObject; Info: TLccHardwareConnectionInfo);
+    procedure OnClientErrorMessage(Sender: TObject; Info: TLccHardwareConnectionInfo);
 
     // Node Manager Callbacks
     procedure OnNodeManagerIDChange(Sender: TObject; LccSourceNode: TLccNode);
@@ -243,7 +244,7 @@ type
     procedure OnControllerQuerySpeedReply(Sender: TLccNode; SetSpeed, CommandSpeed, ActualSpeed: THalfFloat; Status: Byte);
     procedure OnControllerQueryFunctionReply(Sender: TLccNode; Address: DWORD; Value: Word);
     procedure OnControllerReqestTakeover(Sender: TLccNode; var Allow: Boolean);
-    procedure OnControllerSearchResult(Sender: TLccAssignTrainAction; Results: TLccSearchResultsArray; SearchResultCount: Integer; var SelectedResultIndex: Integer);
+    procedure OnControllerSearchResult(Sender: TLccTractionAssignTrainAction; Results: TLccSearchResultsArray; SearchResultCount: Integer; var SelectedResultIndex: Integer);
 
     procedure ReleaseTrain;
 
@@ -255,7 +256,6 @@ type
   public
     { Public declarations }
     property EthernetClient: TLccEthernetClient read FEthernetClient write FEthernetClient;
-    property EthernetServer: TLccEthernetServer read FEthernetServer write FEthernetServer;
     property NodeManager: TLccCanNodeManager read FNodeManager write FNodeManager;
     property ControllerNode: TLccTrainController read FControllerNode write FControllerNode; // First Node created by the NodeManager, it is assigned when the Ethenetlink is established
 
@@ -279,7 +279,7 @@ begin
   inherited;
   FMaxLoggingLines := 100;
 //  FIpServerAddress := '127.0.0.1';
-  FIpServerAddress := '10.0.3.154';
+  FIpServerAddress := '10.0.3.151';
   FPort := 12021;
   FGridConnect := True;
 end;
@@ -322,16 +322,20 @@ end;
 
 procedure TOpenLcbThrottleForm.ButtonNetworkConnectClick(Sender: TObject);
 var
-  EthernetRec: TLccEthernetRec;
+  LocalInfo: TLccEthernetConnectionInfo;
 begin
   if not EthernetClient.Connected then
   begin
-    FillChar(EthernetRec, SizeOf(EthernetRec), #0);
-    EthernetRec.AutoResolveIP := True;
-    EthernetRec.ListenerIP := OpenLcbSettings.IpServerAddress;
-    EthernetRec.ListenerPort := OpenLcbSettings.Port;
-    EthernetClient.OpenConnection(EthernetRec);
-    EthernetClient.Gridconnect := OpenLcbSettings.GridConnect;
+    LocalInfo := TLccEthernetConnectionInfo.Create;
+    try
+    LocalInfo.AutoResolveIP := True;
+    LocalInfo.ListenerIP := OpenLcbSettings.IpServerAddress;
+    LocalInfo.ListenerPort := OpenLcbSettings.Port;
+    LocalInfo.GridConnect := OpenLcbSettings.GridConnect;
+    EthernetClient.OpenConnection(LocalInfo);
+    finally
+      FreeAndNil(LocalInfo)
+    end;
   end;
 end;
 
@@ -500,8 +504,6 @@ procedure TOpenLcbThrottleForm.FormCloseQuery(Sender: TObject; var CanClose: Boo
 begin
   EthernetClient.CloseConnection(nil);
   FreeAndNil(FEthernetClient);
-  EthernetServer.CloseConnection(nil);
-  FreeAndNil(FEthernetServer);
   NodeManager.Clear;
   FreeAndNil(FNodeManager);
 end;
@@ -513,11 +515,6 @@ begin
 
   FOpenLcbSettings := TOpenLcbSettings.Create;
 
-  FEthernetClient := TLccEthernetClient.Create(nil);
-  FEthernetServer := TLccEthernetServer.Create(nil);
-  EthernetClient.OnConnectionStateChange := OnClientConnectionStateChange;
-  EthernetClient.Gridconnect := True;
-
   FNodeManager := TLccCanNodeManager.Create(nil);
   NodeManager.OnLccNodeAliasIDChanged := OnNodeManagerAliasChange;
   NodeManager.OnLccNodeIDChanged := OnNodeManagerIDChange;
@@ -528,8 +525,9 @@ begin
   NodeManager.OnLccMessageSend := OnNodeManagerSendMessage;
   NodeManager.OnLccMessageReceive := OnNodeManagerReceiveMessage;
 
-  EthernetServer.NodeManager := NodeManager;
-  EthernetClient.NodeManager := NodeManager;
+  FEthernetClient := TLccEthernetClient.Create(nil, NodeManager);
+  EthernetClient.OnConnectionStateChange := OnClientConnectionStateChange;
+  EthernetClient.OnErrorMessage := OnClientErrorMessage;
 end;
 
 procedure TOpenLcbThrottleForm.FormGesture(Sender: TObject;
@@ -660,11 +658,6 @@ end;
 
 procedure TOpenLcbThrottleForm.OnNodeManagerSendMessage(Sender: TObject;LccMessage: TLccMessage);
 begin
-  if EthernetClient.Connected then
-    EthernetClient.SendMessage(LccMessage);
-  if EthernetServer.Connected then
-    EthernetServer.SendMessage(LccMessage);
-
   if OpenLcbSettings.Log then
   begin
     MemoOpenLCB.BeginUpdate;
@@ -689,45 +682,53 @@ begin
   end;
 end;
 
-procedure TOpenLcbThrottleForm.OnClientConnectionStateChange(Sender: TObject; EthernetRec: TLccEthernetRec);
+procedure TOpenLcbThrottleForm.OnClientConnectionStateChange(Sender: TObject; Info: TLccHardwareConnectionInfo);
 begin
-   case EthernetRec.ConnectionState of
-      ccsClientConnecting    :  TextNetworkStatus.Text := 'Connecting';
-      ccsClientConnected     :  begin
-                                  TextNetworkStatus.Text := EthernetRec.ClientIP + ':' + IntToStr(EthernetRec.ClientPort);
-                                  ButtonNetworkDisconnect.Enabled := True;
-                                  ButtonNetworkConnect.Enabled := False;
-                                  ButtonNodeCreate.Enabled := True;
+  if Sender is TLccConnectionThread then
+  begin
+    case Info.ConnectionState of
+      lcsConnecting :
+        begin
+          TextNetworkStatus.Text := 'Connecting';
+        end;
+      lcsConnected :
+        begin
+          TextNetworkStatus.Text := (Info as TLccEthernetConnectionInfo).ClientIP + ':' + IntToStr((Info as TLccEthernetConnectionInfo).ClientPort);
+          ButtonNetworkDisconnect.Enabled := True;
+          ButtonNetworkConnect.Enabled := False;
+          ButtonNodeCreate.Enabled := True;
 
-                                  ControllerNode := NodeManager.AddNodeByClass('', TLccTrainController, True) as TLccTrainController;
-                                  ControllerNode.OnTrainAssigned := OnControllerTrainAssigned;
-                                  ControllerNode.OnTrainReleased := OnControllerTrainReleased;
-                                  ControllerNode.OnControllerRequestTakeover := OnControllerReqestTakeover;
-                                  ControllerNode.OnQuerySpeedReply := OnControllerQuerySpeedReply;
-                                  ControllerNode.OnQueryFunctionReply := OnControllerQueryFunctionReply;
-                                  ControllerNode.OnSearchResult := OnControllerSearchResult;
-                               //   PanelThrottleFace1.Enabled := True;
-                                end;
-      ccsClientDisconnecting :  begin
-                                  TextNetworkStatus.Text := 'Disconnecting';
-                                  NodeManager.Clear;   // Logout
-                                  ControllerNode := nil;
-                                end;
-      ccsClientDisconnected  :  begin
-                                  TextNetworkStatus.Text := 'Not Connected';
-                                  ButtonNetworkConnect.Enabled := True;
-                                  ButtonNetworkDisconnect.Enabled := False;
-                                  ButtonNodeCreate.Enabled := False;
-                                  ButtonNodeDestroy.Enabled := False;
-                                  NodeManager.Clear;
-                                end;
-   end;
+          ControllerNode := NodeManager.AddNodeByClass('', TLccTrainController, True) as TLccTrainController;
+          ControllerNode.OnTrainAssigned := OnControllerTrainAssigned;
+          ControllerNode.OnTrainReleased := OnControllerTrainReleased;
+          ControllerNode.OnControllerRequestTakeover := OnControllerReqestTakeover;
+          ControllerNode.OnQuerySpeedReply := OnControllerQuerySpeedReply;
+         ControllerNode.OnQueryFunctionReply := OnControllerQueryFunctionReply;
+           ControllerNode.OnSearchResult := OnControllerSearchResult;
+       //   PanelThrottleFace1.Enabled := True;
+        end;
+      lcsDisconnecting :
+        begin
+           TextNetworkStatus.Text := 'Disconnecting';
+           NodeManager.Clear;   // Logout
+           ControllerNode := nil;
+        end;
+      lcsDisconnected :
+        begin
+          TextNetworkStatus.Text := 'Not Connected';
+          ButtonNetworkConnect.Enabled := True;
+          ButtonNetworkDisconnect.Enabled := False;
+          ButtonNodeCreate.Enabled := False;
+          ButtonNodeDestroy.Enabled := False;
+          NodeManager.Clear;
+        end;
+    end;
+  end;
 end;
 
-procedure TOpenLcbThrottleForm.OnClientErrorMessage(Sender: TObject;
-  EthernetRec: TLccEthernetRec);
+procedure TOpenLcbThrottleForm.OnClientErrorMessage(Sender: TObject; Info: TLccHardwareConnectionInfo);
 begin
-
+  ShowMessage('Error Code: ' + IntToStr(Info.ErrorCode) + ' ' + Info.MessageStr);
 end;
 
 procedure TOpenLcbThrottleForm.OnControllerQueryFunctionReply(Sender: TLccNode;
@@ -790,7 +791,7 @@ begin
 end;
 
 procedure TOpenLcbThrottleForm.OnControllerSearchResult(
-  Sender: TLccAssignTrainAction; Results: TLccSearchResultsArray;
+  Sender: TLccTractionAssignTrainAction; Results: TLccSearchResultsArray;
   SearchResultCount: Integer; var SelectedResultIndex: Integer);
 begin
   case SearchResultCount of

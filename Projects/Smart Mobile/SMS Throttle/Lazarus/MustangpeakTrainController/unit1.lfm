@@ -1,5 +1,5 @@
 object FormTrainController: TFormTrainController
-  Left = 542
+  Left = 541
   Height = 712
   Top = 108
   Width = 435
@@ -105,7 +105,7 @@ object FormTrainController: TFormTrainController
         Top = 64
         Width = 110
         TabOrder = 2
-        Text = '10.0.3.141'
+        Text = '10.0.3.151'
       end
       object Label2: TLabel
         Left = 232
@@ -151,13 +151,14 @@ object FormTrainController: TFormTrainController
         EditLabel.ParentColor = False
         TabOrder = 0
       end
-      object ButtonThrottleAssignAddress: TButton
+      object ButtonAssignTrain: TButton
         Left = 9
         Height = 23
         Top = 48
         Width = 103
         Caption = 'Start Search'
-        OnClick = ButtonThrottleAssignAddressClick
+        Enabled = False
+        OnClick = ButtonAssignTrainClick
         TabOrder = 1
       end
       object PanelThrottleControls: TPanel
@@ -546,6 +547,8 @@ object FormTrainController: TFormTrainController
         Top = 48
         Width = 107
         Caption = 'Release Train'
+        Enabled = False
+        OnClick = ButtonReleaseTrainClick
         TabOrder = 9
       end
     end

@@ -6,9 +6,9 @@
     <PropertyGroup>
         <DeviceId Condition="'$(Platform)'=='Android'"/>
         <DeviceId Condition="'$(Platform)'=='Android64'"/>
-        <DeviceId Condition="'$(Platform)'=='iOSDevice32'">b3211ae9f3ed7e4ab9fa04988e9d265cceef4dcd</DeviceId>
-        <DeviceId Condition="'$(Platform)'=='iOSDevice64'">b3211ae9f3ed7e4ab9fa04988e9d265cceef4dcd</DeviceId>
-        <DeviceId Condition="'$(Platform)'=='iOSSimulator'">CDC0E966-0485-4967-AE4F-2F589BA5F507</DeviceId>
+        <DeviceId Condition="'$(Platform)'=='iOSDevice32'"/>
+        <DeviceId Condition="'$(Platform)'=='iOSDevice64'"/>
+        <DeviceId Condition="'$(Platform)'=='iOSSimulator'">CE6A4308-3D66-4D4F-92C9-255CF83C0868</DeviceId>
     </PropertyGroup>
     <ItemGroup Condition="'$(Platform)'=='iOSDevice64'">
         <DeployFile Include="$(BDS)\bin\Artwork\iOS\iPhone\FM_ApplicationIcon_57x57.png" Condition="'$(Config)'=='Debug'">
@@ -999,6 +999,15 @@
             <RemoteName>libmidas.dylib</RemoteName>
             <DeployClass>File</DeployClass>
             <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="OSX32\Debug\OpenLCBThrottle.rsm" Condition="'$(Config)'=='Debug'">
+            <RemoteDir>OpenLCBThrottle.app\Contents\MacOS\</RemoteDir>
+            <RemoteName>OpenLCBThrottle.rsm</RemoteName>
+            <DeployClass>DebugSymbols</DeployClass>
+            <Operation>1</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>

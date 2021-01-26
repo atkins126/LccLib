@@ -22,7 +22,6 @@ uses
     System.Generics.Collections,
   {$ENDIF}
   {$IFDEF ULTIBO}
-  lcc_threaded_stringlist,
   Winsock2,
   Console,
   {$ELSE}
@@ -31,11 +30,12 @@ uses
   {$ENDIF}
   lcc_node_messages,
   lcc_node_manager,
+  lcc_node,
+  lcc_utilities,
   lcc_app_common_settings,
   lcc_threaded_circulararray,
   lcc_ethernet_tcp,
   lcc_threaded_stringlist,
-  lcc_alias_server,
   lcc_defines,
   lcc_gridconnect,
   lcc_common_classes,
@@ -57,8 +57,10 @@ type
     FClientIP: string;
     FClientPort: word;
     FHeartbeat: Integer;
+    FLingerTime: Integer;
     FListenerIP: string;
     FListenerPort: word;
+    FSuppressConnectionResetError: Boolean;
   public
     property AutoResolveIP: Boolean read FAutoResolve write FAutoResolve;                     // Tries to autoresolve the local unique netword IP of the machine
     property ClientIP: string read FClientIP write FClientIP;
@@ -66,7 +68,10 @@ type
     property HeartbeatRate: Integer read FHeartbeat write FHeartbeat;
     property ListenerIP: string read FListenerIP write FListenerIP;
     property ListenerPort: word read FListenerPort write FListenerPort;
+    property LingerTime: Integer read FLingerTime write FLingerTime;
+    property SuppressConnectionResetError: Boolean read FSuppressConnectionResetError write FSuppressConnectionResetError;
 
+    constructor Create;
     function Clone: TLccHardwareConnectionInfo; override;
   end;
 
@@ -90,18 +95,17 @@ type
     {$ENDIF}
     property GridConnectMessageAssembler: TLccGridConnectMessageAssembler read FGridConnectMessageAssembler write FGridConnectMessageAssembler;
 
-    procedure HandleErrorAndDisconnect; override;
+    procedure HandleErrorAndDisconnect(SuppressMessage: Boolean); override;
     procedure HandleSendConnectionNotification(NewConnectionState: TLccConnectionState); override;
     procedure OnConnectionStateChange; virtual;
     procedure OnErrorMessageReceive; virtual;
-    procedure ReceiveMessage; override;
-    procedure SendMessage(AMessage: TLccMessage); override;
+    procedure RequestErrorMessageSent; override;
     procedure ForceTerminate; override;
 
-    procedure TryTransmitGridConnect(HandleErrors: Boolean);
-    procedure TryTransmitTCPProtocol(HandleErrors: Boolean);
-    procedure TryReceiveGridConnect(AGridConnectHelper: TGridConnectHelper; HandleErrors: Boolean);
-    procedure TryReceiveTCPProtocol(HandleErrors: Boolean);
+    procedure TryTransmitGridConnect;
+    procedure TryTransmitTCPProtocol;
+    procedure TryReceiveGridConnect(AGridConnectHelper: TGridConnectHelper);
+    procedure TryReceiveTCPProtocol;
 
   public
     constructor Create(CreateSuspended: Boolean; AnOwner: TLccHardwareConnectionManager; AConnectionInfo: TLccHardwareConnectionInfo); override;
@@ -122,7 +126,6 @@ type
   protected
     procedure DoConnectionState(Thread: TLccConnectionThread; ConnectionInfo: TLccHardwareConnectionInfo); virtual;
     procedure DoErrorMessage(Thread: TLccConnectionThread; ConnectionInfo: TLccHardwareConnectionInfo); override;
-    procedure DoReceiveMessage(Thread: TLccConnectionThread; ConnectionInfo: TLccHardwareConnectionInfo); override;
   public
     function OpenConnectionWithLccSettings: TLccConnectionThread; override;
   published
@@ -133,6 +136,12 @@ implementation
 
 { TLccEthernetConnectionInfo }
 
+constructor TLccEthernetConnectionInfo.Create;
+begin
+  inherited;
+  FSuppressConnectionResetError := True;
+end;
+
 function TLccEthernetConnectionInfo.Clone: TLccHardwareConnectionInfo;
 begin
   Result := inherited Clone;
@@ -142,7 +151,10 @@ begin
   (Result as TLccEthernetConnectionInfo).ListenerIP := (Self as TLccEthernetConnectionInfo).ListenerIP;
   (Result as TLccEthernetConnectionInfo).ListenerPort := (Self as TLccEthernetConnectionInfo).ListenerPort;
   (Result as TLccEthernetConnectionInfo).HeartbeatRate := (Self as TLccEthernetConnectionInfo).HeartbeatRate;
+  (Result as TLccEthernetConnectionInfo).LingerTime := (Self as TLccEthernetConnectionInfo).LingerTime;
+  (Result as TLccEthernetConnectionInfo).SuppressConnectionResetError := (Self as TLccEthernetConnectionInfo).SuppressConnectionResetError;
 end;
+
 
 { TLccEthernetHardwareConnectionManager }
 
@@ -156,17 +168,6 @@ procedure TLccEthernetHardwareConnectionManager.DoErrorMessage(Thread: TLccConne
 begin
   if Assigned(OnErrorMessage) then
     OnErrorMessage(Thread, ConnectionInfo)
-end;
-
-procedure TLccEthernetHardwareConnectionManager.DoReceiveMessage(Thread: TLccConnectionThread; ConnectionInfo: TLccHardwareConnectionInfo);
-begin
-  inherited;
-
-    // Received a message, see if it is an alias we need to save (eventually for now save them all)
-  case ConnectionInfo.LccMessage.CAN.MTI of
-    MTI_CAN_AMR : NodeManager.AliasServer.RemoveMapping(ConnectionInfo.LccMessage.CAN.SourceAlias);
-    MTI_CAN_AMD : NodeManager.AliasServer.ForceMapping(ConnectionInfo.LccMessage.SourceID, ConnectionInfo.LccMessage.CAN.SourceAlias)
-  end;
 end;
 
 function TLccEthernetHardwareConnectionManager.OpenConnectionWithLccSettings: TLccConnectionThread;
@@ -192,29 +193,24 @@ end;
 
 { TLccBaseEthernetThread }
 
-procedure TLccBaseEthernetThread.HandleErrorAndDisconnect;
+procedure TLccBaseEthernetThread.HandleErrorAndDisconnect(SuppressMessage: Boolean);
 begin
   ConnectionInfo.ErrorCode := Socket.LastError;
   ConnectionInfo.MessageStr := Socket.LastErrorDesc;
-  inherited HandleErrorAndDisconnect;
+  inherited HandleErrorAndDisconnect(SuppressMessage);
 end;
 
 procedure TLccBaseEthernetThread.HandleSendConnectionNotification(NewConnectionState: TLccConnectionState);
 begin
   // Taken from the ethernet_client file... not sure if it is useful....
-  if Assigned(Socket) then
-  begin
-    Socket.GetSinLocal;
-    (ConnectionInfo as TLccEthernetConnectionInfo).ClientIP := Socket.GetLocalSinIP;
-    (ConnectionInfo as TLccEthernetConnectionInfo).ClientPort := Socket.GetLocalSinPort;
-  end;
+  // This breaks a Server, it already has the information
+//  if Assigned(Socket) then
+ // begin
+ //   Socket.GetSinLocal;
+ //   (ConnectionInfo as TLccEthernetConnectionInfo).ClientIP := Socket.GetLocalSinIP;
+ //   (ConnectionInfo as TLccEthernetConnectionInfo).ClientPort := Socket.GetLocalSinPort;
+ // end;
   inherited HandleSendConnectionNotification(NewConnectionState);
-end;
-
-procedure TLccBaseEthernetThread.ReceiveMessage;
-begin
-  // Called in context of main thread through Syncronize
-  Owner.ReceiveMessage(Self, ConnectionInfo);
 end;
 
 procedure TLccBaseEthernetThread.OnConnectionStateChange;
@@ -229,21 +225,33 @@ begin
   (Owner as TLccEthernetHardwareConnectionManager).DoErrorMessage(Self, ConnectionInfo);
 end;
 
-procedure TLccBaseEthernetThread.SendMessage(AMessage: TLccMessage);
+procedure TLccBaseEthernetThread.RequestErrorMessageSent;
 var
-  ByteArray: TLccDynamicByteArray;
   i: Integer;
 begin
-  if ConnectionInfo.GridConnect then
+  inherited RequestErrorMessageSent;
+
+  // WE DONT KNOW IF THIS WAS ADDRESSED US SO WE CANT JUST BLINDLY SEND THE ERROR RESULT.....
+
+  i := 0;
+  while i < Owner.NodeManager.Nodes.Count do
   begin
-    MsgStringList.Text := AMessage.ConvertToGridConnectStr(#10, False);
-    for i := 0 to MsgStringList.Count - 1 do
-      OutgoingGridConnect.Add(MsgStringList[i]);
-  end else
-  begin
-    ByteArray := nil;
-    if AMessage.ConvertToLccTcp(ByteArray) then
-      OutgoingCircularArray.AddChunk(ByteArray);
+    if Owner.NodeManager.GridConnect then
+    begin  // Need to look at the Source Alias as the message is in the format to transmit back out already
+      if Owner.NodeManager.Node[i].AliasID = WorkerMessage.CAN.SourceAlias then
+      begin
+        Owner.NodeManager.SendMessage(Self, WorkerMessage);
+        Break;
+      end;
+    end else
+    begin // Need to look at the Source ID as the message is in the format to transmit back out already
+      if EqualNodeID(Owner.NodeManager.Node[i].NodeID, WorkerMessage.SourceID, False) then
+      begin
+        Owner.NodeManager.SendMessage(Self, WorkerMessage);
+        Break;
+      end;
+    end;
+    Inc(i);
   end;
 end;
 
@@ -255,7 +263,7 @@ begin
    Socket.CloseSocket;
 end;
 
-procedure TLccBaseEthernetThread.TryTransmitGridConnect(HandleErrors: Boolean);
+procedure TLccBaseEthernetThread.TryTransmitGridConnect;
 var
   TxStr: string;
   TxList: TStringList;
@@ -273,13 +281,13 @@ begin
 
   if TxStr <> '' then
   begin
-    Socket.SendString(String( TxStr) + #10);
-    if (Socket.LastError <> 0) and HandleErrors then
-      HandleErrorAndDisconnect;
+    Socket.SendString(String( TxStr));
+    if Socket.LastError <> 0 then
+      HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages);
   end;
 end;
 
-procedure TLccBaseEthernetThread.TryTransmitTCPProtocol(HandleErrors: Boolean);
+procedure TLccBaseEthernetThread.TryTransmitTCPProtocol;
 var
   DynamicByteArray: TLccDynamicByteArray;
 begin
@@ -295,18 +303,16 @@ begin
   if Length(DynamicByteArray) > 0 then
   begin
     Socket.SendBuffer(@DynamicByteArray[0], Length(DynamicByteArray));
-    if (Socket.LastError <> 0) and HandleErrors then
-      HandleErrorAndDisconnect;
+    if (Socket.LastError <> 0) then
+      HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages);
   end;
 end;
 
-procedure TLccBaseEthernetThread.TryReceiveGridConnect(
-  AGridConnectHelper: TGridConnectHelper; HandleErrors: Boolean);
+procedure TLccBaseEthernetThread.TryReceiveGridConnect(AGridConnectHelper: TGridConnectHelper);
 var
   RcvByte: Byte;
   GridConnectStrPtr: PGridConnectString;
   RxList: TStringList;
-  i: Integer;
 begin
   RcvByte := Socket.RecvByte(1);
   case Socket.LastError of
@@ -335,8 +341,12 @@ begin
                   end;
                 end;
               end;
+            imgcr_ErrorToSend :
+              begin
+                ConnectionInfo.LccMessage.CopyToTarget(WorkerMessage);
+                Synchronize({$IFDEF FPC}@{$ENDIF}RequestErrorMessageSent);
+              end;
             imgcr_False,
-            imgcr_ErrorToSend,
             imgcr_UnknownError : begin end;
           end;
         end;
@@ -347,16 +357,14 @@ begin
       end;
     WSAECONNRESET   :
       begin
-        if HandleErrors then
-          HandleErrorAndDisconnect;
+        HandleErrorAndDisconnect((ConnectionInfo.SuppressErrorMessages or ((ConnectionInfo as TLccEthernetConnectionInfo).SuppressConnectionResetError)));
       end
   else
-    if HandleErrors then
-      HandleErrorAndDisconnect
+    HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages)
   end;
 end;
 
-procedure TLccBaseEthernetThread.TryReceiveTCPProtocol(HandleErrors: Boolean);
+procedure TLccBaseEthernetThread.TryReceiveTCPProtocol;
 var
   RcvByte: Byte;
 begin
@@ -387,12 +395,10 @@ begin
       end;
     WSAECONNRESET   :
       begin
-        if HandleErrors then
-          HandleErrorAndDisconnect;
+        HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages or ((ConnectionInfo as TLccEthernetConnectionInfo).SuppressConnectionResetError))
       end
   else
-    if HandleErrors then
-      HandleErrorAndDisconnect
+      HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages);
   end;
 end;
 

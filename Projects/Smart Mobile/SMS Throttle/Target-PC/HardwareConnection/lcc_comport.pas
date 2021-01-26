@@ -74,28 +74,10 @@ type
       FSerial: TBlockSerial;                                                      // Serial object
     protected
       procedure Execute; override;
-      procedure SendMessage(AMessage: TLccMessage); override;
-      procedure ReceiveMessage; override;
 
       property Serial: TBlockSerial read FSerial write FSerial;
     public
       property RawData: Boolean read FRawData write FRawData;
-
-      constructor Create(CreateSuspended: Boolean; AnOwner: TLccHardwareConnectionManager; AConnectionInfo: TLccHardwareConnectionInfo); override;
-      destructor Destroy; override;
-  end;
-
-  { TLccComPortThreadList }
-
-  TLccComPortThreadList = class(TThreadList)      // Contains TClientSocketThread objects
-  private
-    function GetCount: Integer;
-  public
-    destructor Destroy; override;
-    procedure CloseComPorts;
-    procedure CloseComPort(ComPortThread: TLccComPortThread);
-
-    property Count: Integer read GetCount;
   end;
 
   { TLccComPort }
@@ -110,9 +92,6 @@ type
     { Private declarations }
   protected
     { Protected declarations }
-      // Property getter must override and make definition based on connection type
-    function GetConnected: Boolean; override;
-
     function IsLccLink: Boolean; override;
   public
     { Public declarations }
@@ -151,62 +130,6 @@ begin
   (Result as TLccComPortConnectionInfo).ConnectionState := ConnectionState;
 end;
 
-{ TLccComPortThreadList }
-
-function TLccComPortThreadList.GetCount: Integer;
-var
-  L: TList;
-begin
-  L := LockList;
-  try
-    Result := L.Count
-  finally
-    UnlockList;
-  end;
-end;
-
-destructor TLccComPortThreadList.Destroy;
-begin
-  CloseComPorts;
-  inherited Destroy;
-end;
-
-procedure TLccComPortThreadList.CloseComPorts;
-var
-  L: TList;
-  Thread: TLccComPortThread;
-begin
-  while Count > 0 do
-  begin
-    L := LockList;
-    try
-      Thread := TLccComPortThread( L[0]);
-      L.Delete(0);
-    finally
-      UnlockList;
-    end;
-    CloseComPort(Thread);
-  end;
-end;
-
-procedure TLccComPortThreadList.CloseComPort( ComPortThread: TLccComPortThread);
-//var
-//  TimeCount: Cardinal;
-begin
-  ComPortThread.Terminate;
-//  TimeCount := GetTickCount;            DON"T LINK OCLB_UTILITES, it causes issues with linking to different packages
-  while (ComPortThread.Running) do
-  begin
- //   if (GetTickCount - TimeCount < 5000) then
-      Application.ProcessMessages
- //   else begin
-  //    KillThread(ComPortThread.Handle);
-  //    ComPortThread.Running := False;
-  //  end;
-  end;
-  FreeAndNil( ComPortThread);
-end;
-
 { TLccComPort }
 
 function TLccComPort.IsLccLink: Boolean;
@@ -231,11 +154,6 @@ begin
     Result := PATH_LINUX_DEV + ComPort;
     {$ENDIF}
   {$ENDIF}
-end;
-
-function TLccComPort.GetConnected: Boolean;
-begin
- // TODO Result := CurrentConnectionState = ccsClientConnected;
 end;
 
 function TLccComPort.OpenConnection(ConnectionInfo: TLccHardwareConnectionInfo): TLccConnectionThread;
@@ -335,7 +253,7 @@ begin
   Serial.Connect((ConnectionInfo as TLccComPortConnectionInfo).ComPort);
   if Serial.LastError <> 0 then
   begin
-    HandleErrorAndDisconnect;
+    HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages);
     Running := False;
   end
   else begin
@@ -343,7 +261,7 @@ begin
       Serial.Config(Baud, Bits, Parity, StopBits, SoftwareHandshake, HardwareHandShake);
     if Serial.LastError <> 0 then
     begin
-      HandleErrorAndDisconnect;
+      HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages);
       Serial.CloseSocket;
       Serial.Free;
       Serial := nil;
@@ -376,7 +294,7 @@ begin
                 begin
                   Serial.SendString(TxStr);
                   if Serial.LastError <> 0 then
-                    HandleErrorAndDisconnect;
+                    HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages);
                 end;
                 LocalSleepCount := 0;
               end;
@@ -386,7 +304,7 @@ begin
               case Serial.LastError of
                 0, ErrTimeout : begin end;
               else
-                HandleErrorAndDisconnect
+                HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages)
               end;
               for i := 1 to Length(RcvStr) do
               begin
@@ -417,7 +335,7 @@ begin
                 begin
                   Serial.SendBuffer(@DynamicByteArray[0], Length(DynamicByteArray));
                   if Serial.LastError <> 0 then
-                    HandleErrorAndDisconnect;
+                    HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages);
                   DynamicByteArray := nil;
                 end;
                 LocalSleepCount := 0;
@@ -449,7 +367,7 @@ begin
 
                   end;
               else
-                HandleErrorAndDisconnect
+                HandleErrorAndDisconnect(ConnectionInfo.SuppressErrorMessages)
               end;
             end;
           end;
@@ -470,44 +388,6 @@ begin
   end;
 end;
 
-procedure TLccComPortThread.ReceiveMessage;
-begin
-  Owner.ReceiveMessage(Self, ConnectionInfo);
-end;
-
-procedure TLccComPortThread.SendMessage(AMessage: TLccMessage);
-var
-  ByteArray: TLccDynamicByteArray;
-  i: Integer;
-begin
-  if not IsTerminated then
-  begin
-    if ConnectionInfo.Gridconnect then
-    begin
-      MsgStringList.Text := AMessage.ConvertToGridConnectStr(#10, False);
-      for i := 0 to MsgStringList.Count - 1 do
-        OutgoingGridConnect.Add(MsgStringList[i]);
-    end else
-    begin
-      ByteArray := nil;
-      if AMessage.ConvertToLccTcp(ByteArray) then
-        OutgoingCircularArray.AddChunk(ByteArray);
-    end;
-  end;
-end;
-
-
-constructor TLccComPortThread.Create(CreateSuspended: Boolean;
-  AnOwner: TLccHardwareConnectionManager;
-  AConnectionInfo: TLccHardwareConnectionInfo);
-begin
-  inherited Create(CreateSuspended, AnOwner, AConnectionInfo);
-end;
-
-destructor TLccComPortThread.Destroy;
-begin
-  inherited Destroy;
-end;
 
 initialization
   RegisterClass(TLccComPort);

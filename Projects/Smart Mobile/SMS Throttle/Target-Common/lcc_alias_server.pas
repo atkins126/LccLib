@@ -36,6 +36,7 @@ uses
         contnrs,
       {$ELSE}
         System.Generics.Collections,
+        System.Generics.Defaults,
       {$ENDIF}
     {$ENDIF}
   {$ENDIF}
@@ -43,6 +44,19 @@ uses
   lcc_utilities;
 
 type
+  TLccAliasMap = class;  // forward
+
+  {$IFDEF DELPHI}
+  TLccAliasSorter = class(TInterfacedObject, IComparer<TLccAliasMap>)
+  public
+    function Compare(const Mapping1, Mapping2: TLccAliasMap): Integer;
+  end;
+
+  TLccNodeIDSorter = class(TInterfacedObject, IComparer<TLccAliasMap>)
+  public
+    function Compare(const Mapping1, Mapping2: TLccAliasMap): Integer;
+  end;
+  {$ENDIF}
 
   { TLccAliasMap }
 
@@ -64,27 +78,29 @@ type
     {$IFDEF DELPHI}
     FAliasSortedMap: TObjectList<TLccAliasMap>;
     FNodeIDSortedMap: TObjectList<TLccAliasMap>;
+    FAliasSorter: IComparer<TLccAliasMap>;
+    FNodeIDSorter: IComparer<TLccAliasMap>;
    {$ELSE}
     FAliasSortedMap: TObjectList;
-    FIsDirty: Boolean;
-    FNetworkRefreshed: Boolean;  // Users sets this to indicate globally that a AME global has been sent and the mapping should include everything on the network
     FNodeIDSortedMap: TObjectList;
+   {$ENDIF}
     FOnAddMapping: TNotifyEvent;
     FOnDeleteMapping: TNotifyEvent;
+    FIsDirty: Boolean;
     function GetCount: Integer;
-   {$ENDIF}
   protected
     property IsDirty: Boolean read FIsDirty;
 
     {$IFDEF DELPHI}
     property AliasSortedMap: TObjectList<TLccAliasMap> read FAliasSortedMap write FAliasSortedMap;
     property NodeIDSortedMap: TObjectList<TLccAliasMap> read FNodeIDSortedMap write FNodeIDSortedMap;
+    property AliasSorter: IComparer<TLccAliasMap> read FAliasSorter write FAliasSorter;
+    property NodeIDSorter: IComparer<TLccAliasMap> read FNodeIDSorter write FNodeIDSorter;
     {$ELSE}
     property AliasSortedMap: TObjectList read FAliasSortedMap write FAliasSortedMap;
     property NodeIDSortedMap: TObjectList read FNodeIDSortedMap write FNodeIDSortedMap;
     {$ENDIF}
 
-    function AddMapping(ANodeID: TNodeID; AliasID: Word): TLccAliasMap;
     procedure DoAddMapping; virtual;
     procedure DoDeleteMapping; virtual;
     function RemoveMappingByNodeID(ANodeID: TNodeID): Boolean;
@@ -92,7 +108,6 @@ type
     procedure SortMaps;
   public
     property Count: Integer read GetCount;
-    property NetworkRefreshed: Boolean read FNetworkRefreshed write FNetworkRefreshed;
 
     property OnDeleteMapping: TNotifyEvent read FOnDeleteMapping write FOnDeleteMapping;
     property OnAddMapping: TNotifyEvent read FOnAddMapping write FOnAddMapping;
@@ -100,11 +115,12 @@ type
     constructor Create;
     destructor Destroy; override;
 
+    function AddMapping(ANodeID: TNodeID; AnAliasID: Word): TLccAliasMap;
     procedure Clear;
     function FindInNodeIDSortedMap(ANodeID: TNodeID; var MapIndex: Integer): TLccAliasMap;
     function FindInAliasSortedMap(AnAliasID: Word; var MapIndex: Integer): TLccAliasMap;
-    procedure ForceMapping(ANodeID: TNodeID; AnAliasID: Word);
     procedure RemoveMapping(AnAliasID: Word);
+    function ValidateAlias(AnAlias: Word): Boolean;
 
 
   end;
@@ -113,14 +129,33 @@ type
 implementation
 
 
-{ TLccAliasMap }
-
-constructor TLccAliasMap.Create(ANodeID: TNodeID; AnAliasID: Word);
+ {
+procedure BinarySearchAlias(SearchNum : integer);
+var
+  Found, Failed: Boolean;
+  Last, First, MidPoint: integer;
 begin
-  FAliasID := AnAliasID;
-  FNodeID[0] := ANodeID[0];
-  FNodeID[1] := ANodeID[1];
-end;
+  Found := False;
+  Failed:= False;
+  Last := UPPER_BOUND;
+  First := 1;
+  repeat
+    Midpoint := (First + Last) DIV 2;
+    if Nums[MidPoint] = SearchNum then
+      begin
+        Found := True;
+        writeln('Found at position ' ,MidPoint);
+      end
+    else if (First > Last) then
+      Failed := true;
+    else if Nums[MidPoint] < SearchNum then
+      First := MidPoint + 1;
+    else
+      Last := MidPoint - 1;
+  until Found or Failed;
+  if Failed then
+    writeln('Not found.');
+end;   }
 
 function SortFuncNodeID(Item1, Item2: {$IFDEF DWSCRIPT}TObject{$ELSE}Pointer{$ENDIF}): Integer;
 var
@@ -158,43 +193,80 @@ begin
     Result := 0; /// THIS IS A BAD ERROR.... Duplicate Alias
 end;
 
- {
-procedure BinarySearchAlias(SearchNum : integer);
-var
-  Found, Failed: Boolean;
-  Last, First, MidPoint: integer;
+{$IFDEF DELPHI}
+{ TLccAliasSorter }
+
+function TLccAliasSorter.Compare(const Mapping1, Mapping2: TLccAliasMap): Integer;
 begin
-  Found := False;
-  Failed:= False;
-  Last := UPPER_BOUND;
-  First := 1;
-  repeat
-    Midpoint := (First + Last) DIV 2;
-    if Nums[MidPoint] = SearchNum then
-      begin
-        Found := True;
-        writeln('Found at position ' ,MidPoint);
-      end
-    else if (First > Last) then
-      Failed := true;
-    else if Nums[MidPoint] < SearchNum then
-      First := MidPoint + 1;
-    else
-      Last := MidPoint - 1;
-  until Found or Failed;
-  if Failed then
-    writeln('Not found.');
-end;   }
+  if Mapping1.AliasID > Mapping2.AliasID then
+    Result := 1
+  else
+  if Mapping1.AliasID < Mapping2.AliasID then
+    Result := -1
+  else
+    Result := 0; /// THIS IS A BAD ERROR.... Duplicate Alias
+end;
+
+{ TLccNodeIDSorter }
+
+function TLccNodeIDSorter.Compare(const Mapping1, Mapping2: TLccAliasMap): Integer;
+begin
+  if Mapping1.NodeID[1] > Mapping2.NodeID[1] then
+    Result := 1
+  else
+  if Mapping1.NodeID[1] < Mapping2.NodeID[1] then
+    Result := -1
+  else
+  if Mapping1.NodeID[0] > Mapping2.NodeID[0] then
+    Result := 1
+  else
+  if Mapping1.NodeID[0] < Mapping2.NodeID[0] then
+    Result := -1
+  else
+    Result := 0; /// THIS IS A BAD ERROR.... Duplicate NodeIDs
+end;
+
+{$ENDIF}
+
+
+{ TLccAliasMap }
+
+constructor TLccAliasMap.Create(ANodeID: TNodeID; AnAliasID: Word);
+begin
+  FAliasID := AnAliasID;
+  FNodeID[0] := ANodeID[0];
+  FNodeID[1] := ANodeID[1];
+end;
 
 { TLccAliasServer }
 
-function TLccAliasServer.AddMapping(ANodeID: TNodeID; AliasID: Word): TLccAliasMap;
+function TLccAliasServer.AddMapping(ANodeID: TNodeID; AnAliasID: Word): TLccAliasMap;
+var
+  MapIndex: Integer;
 begin
-  Result := TLccAliasMap.Create(ANodeID, AliasID);
-  AliasSortedMap.Add(Result);  // Owns the object in non-SMS
-  NodeIDSortedMap.Add(Result);
-  FIsDirty := True;
-  DoAddMapping;
+  MapIndex := -1;
+
+  // See if that Alias is Mapped
+  Result := FindInAliasSortedMap(AnAliasID, MapIndex);
+
+  if Assigned(Result) then
+  begin
+    // Check if our mapping is correct
+    if not EqualNodeID(ANodeID, Result.NodeID, False) then
+    begin // Not correct so dump it and then create a new one below
+      RemoveMappingByAliasID(AnAliasID);
+      Result := nil;
+    end;
+  end;
+
+  if not Assigned(Result) then
+  begin
+    Result := TLccAliasMap.Create(ANodeID, AnAliasID);
+    AliasSortedMap.Add(Result);  // Owns the object in non-SMS
+    NodeIDSortedMap.Add(Result);
+    FIsDirty := True;
+    DoAddMapping;
+  end;
 end;
 
 function TLccAliasServer.RemoveMappingByNodeID(ANodeID: TNodeID): Boolean;
@@ -220,20 +292,34 @@ end;
 
 function TLccAliasServer.RemoveMappingByAliasID(AnAliasID: Word): Boolean;
 var
-  MapIndex: Integer;
+  MapIndexInAliasSortedMap, MapIndexInNodeIDSortedMap: Integer;
+  AliasMap: TLccAliasMap;
 begin
   Result := False;
-  MapIndex := -1;
-  FindInAliasSortedMap(AnAliasID, MapIndex);
-  if MapIndex > -1 then
+  MapIndexInAliasSortedMap := -1;
+  MapIndexInNodeIDSortedMap := -1;
+  AliasMap := FindInAliasSortedMap(AnAliasID, MapIndexInAliasSortedMap);
+  if Assigned(AliasMap) then
   begin
-    {$IFDEF DWSCRIPT}
-    NodeIDSortedMap.Remove(MapIndex);
-    AliasSortedMap.Remove(MapIndex);
-    {$ELSE}
-    NodeIDSortedMap.Delete(MapIndex);
-    AliasSortedMap.Delete(MapIndex); // Owns the object in non-SMS
-    {$ENDIF}
+    FindInNodeIDSortedMap(AliasMap.NodeID, MapIndexInNodeIDSortedMap);
+    if  MapIndexInNodeIDSortedMap > -1 then
+    begin
+      {$IFDEF DWSCRIPT}
+      NodeIDSortedMap.Remove(MapIndexInNodeIDSortedMap);
+      {$ELSE}
+      NodeIDSortedMap.Delete(MapIndexInNodeIDSortedMap);
+      {$ENDIF}
+    end;
+
+    if  MapIndexInAliasSortedMap > -1 then
+    begin
+      {$IFDEF DWSCRIPT}
+      AliasSortedMap.Remove(MapIndexInAliasSortedMap); // Owns the object in non-SMS
+      {$ELSE}
+      AliasSortedMap.Delete(MapIndexInAliasSortedMap);  // Owns the object in non-SMS
+      {$ENDIF}
+    end;
+
     DoDeleteMapping;
     Result := True;
   end;
@@ -290,6 +376,8 @@ begin
   {$IFDEF DELPHI}
     FAliasSortedMap := TObjectList<TLccAliasMap>.Create(False);
     FNodeIDSortedMap := TObjectList<TLccAliasMap>.Create(True);
+    FAliasSorter := TLccAliasSorter.Create as IComparer<TLccAliasMap>;
+    FNodeIDSorter := TLccNodeIDSorter.Create as IComparer<TLccAliasMap>;
   {$ELSE}
     FAliasSortedMap := TObjectList.Create;
     FNodeIDSortedMap := TObjectList.Create;
@@ -312,7 +400,6 @@ begin
   NodeIDSortedMap.Clear;
   AliasSortedMap.Clear; // Owns the object in non-SMS
   FIsDirty := False;
-  FNetworkRefreshed := False;
   DoDeleteMapping;
 end;
 
@@ -328,15 +415,6 @@ begin
     OnDeleteMapping(Self);
 end;
 
-procedure TLccAliasServer.ForceMapping(ANodeID: TNodeID; AnAliasID: Word);
-var
-  MapIndex: Integer;
-begin
-  MapIndex := -1;
-  if not Assigned(FindInAliasSortedMap(AnAliasID, MapIndex)) then
-    AddMapping(ANodeID, AnAliasID);
-end;
-
 function TLccAliasServer.GetCount: Integer;
 begin
   Result := AliasSortedMap.Count;
@@ -347,13 +425,26 @@ begin
   RemoveMappingByAliasID(AnAliasID);
 end;
 
+function TLccAliasServer.ValidateAlias(AnAlias: Word): Boolean;
+var
+  MapIndex: Integer;
+begin
+  Result := True;
+  if AnAlias <> 0 then
+  begin
+    MapIndex := -1;
+    Result := Assigned(FindInAliasSortedMap(AnAlias, MapIndex));
+  end;
+end;
+
 
 procedure TLccAliasServer.SortMaps;
 begin
   if IsDirty then
   begin
     {$IFDEF DELPHI}
-    AliasMapping.Sort;
+    AliasSortedMap.Sort(AliasSorter);
+    NodeIDSortedMap.Sort(NodeIDSorter);
     {$ELSE}
     AliasSortedMap.Sort({$IFNDEF DELPHI}@{$ENDIF}SortFuncAlias);
     NodeIDSortedMap.Sort({$IFNDEF DELPHI}@{$ENDIF}SortFuncNodeID);

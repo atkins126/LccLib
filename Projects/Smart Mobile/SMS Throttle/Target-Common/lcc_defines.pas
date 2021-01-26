@@ -120,7 +120,6 @@ type
 
 type
   TEventState = (evs_Unknown, evs_Valid, evs_InValid);
-  TIsNodeTestType = (ntt_Dest, ntt_Source);
   TLccConfigDataType = (cdt_String, cdt_Int, cdt_EventID, cdt_Bit);
 
   TLccConnectionState = (lcsConnecting, lcsConnected, lcsDisconnecting, lcsDisconnected);
@@ -177,8 +176,6 @@ const
   MTI_CAN_CID4                           = $03000000;                                // non-OpenLCB Protocol
   MTI_CAN_CID5                           = $02000000;                                // non-OpenLCB Protocol
   MTI_CAN_CID6                           = $01000000;                                // non-OpenLCB Protocol
-  MTI_CAN_CIDX_MASK                      = $0F000000;
-  MTI_CAN_CID_MASK                       = $0FFFF000;
 
   MTI_CAN_RID                            = $00700000;                                // Reserve ID
   MTI_CAN_AMD                            = $00701000;                                // Alias Map Definition
@@ -439,8 +436,9 @@ const
   TRACTION_CONTROLLER_CONFIG_CHANGED_NOTIFY  = $04;
 
   TRACTION_CONTROLLER_CONFIG_REPLY_OK = $00;
-  TRACTION_CONTROLLER_CONFIG_ASSIGN_REPLY_REFUSE_TRAIN = $02; // Bit 1
   TRACTION_CONTROLLER_CONFIG_ASSIGN_REPLY_REFUSE_ASSIGNED_CONTROLLER = $01;  // Bit 0
+  TRACTION_CONTROLLER_CONFIG_ASSIGN_REPLY_REFUSE_TRAIN = $02; // Bit 1
+  TRACTION_CONTROLLER_CONFIG_REPLY_PENDING = $FF;  // This is an internal value used in the statemachine
 
   TRACTION_LISTENER                   = $30;
   TRACTION_LISTENER_ATTACH            = $01;

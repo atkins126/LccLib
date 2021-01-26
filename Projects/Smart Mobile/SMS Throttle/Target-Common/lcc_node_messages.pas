@@ -46,9 +46,7 @@ type
     FiTag: Integer;
     FMTI: DWord;
     FSourceAlias: Word;
-    function GetIsMultiFrame: Boolean;
   public
-    property IsMultiFrame: Boolean read GetIsMultiFrame;  // If the message can come in on multiple frames if CAN (see Framing bits as well)
     property iTag: Integer read FiTag write FiTag;        // General purpose counter/integer depending on the message
     property MTI: DWord read FMTI write FMTI;             // WARNING:  This MTI is shifted Left by 2 Bytes where the Source Address Was!!!!!!
     property DestAlias: Word read FDestAlias write FDestAlias;
@@ -61,21 +59,18 @@ type
 
 TLccMessage = class
 private
-  FAbandonTimeout: Integer;
-  FIsCAN: Boolean;                                                          // True if only The CAN_Message MTI is valid
+  FAbandonTimeout: Integer;                 // If the message is being held for some reason (CAN multi frame assembly, waiting for AME to aquire the Alias, etc) this is used to see how long it has been alive and when to decide it has been abandon and should be freed
+  FIsCAN: Boolean;                          // The message is a CAN link message which typically needs special handling
   FCAN: TLccCANMessage;
-  FDataArray: TLccByteArray;
-  FDataCount: Integer;
-  FDestID: TNodeID;
-  FSourceID: TNodeID;
-  FMTI: Word;
-  FRetryAttempts: Integer;
-  FUserString: string;  // Allows info to be passed in a message for non OpenLCBMessages (DCC Strings for the ComPort for instance)
+  FDataArray: TLccByteArray;                // The payload of the message (if there is a payload).  This is the full payload that has been already been assembled if we are on a CAN link
+  FDataCount: Integer;                      // How many bytes in the DataArray are valid
+  FDestID: TNodeID;                         // NodeID of the Destination of a message (typically a node in our NodeManager)
+  FSourceID: TNodeID;                       // NodeID of the Source of a message (AliasServer will ensure this is populated)
+  FMTI: Word;                               // The Actual MTI of the message IF it is not a CAN frame message
+  FRetryAttempts: Integer;                  // If a message returned "Temporary" (like no buffers) this holds how many time it has been retried and defines a give up time to stop resending
   function GetHasDestination: Boolean;
   function GetHasDestNodeID: Boolean;
   function GetHasSourceNodeID: Boolean;
-  function GetIsDatagram: Boolean;
-  function GetIsStream: Boolean;
   function GetDataArrayIndexer(iIndex: DWord): Byte;
 
   procedure SetDataArrayIndexer(iIndex: DWord; const Value: Byte);
@@ -92,12 +87,9 @@ public
   property HasDestNodeID: Boolean read GetHasDestNodeID;
   property HasSourceNodeID: Boolean read GetHasSourceNodeID;
   property IsCAN: Boolean read FIsCAN write FIsCAN;
-  property IsDatagram: Boolean read GetIsDatagram;
-  property IsStream: Boolean read GetIsStream;
   property MTI: Word read FMTI write FMTI;
   property RetryAttempts: Integer read FRetryAttempts write FRetryAttempts;
   property SourceID: TNodeID read FSourceID write FSourceID;
-  property UserString: string read FUserString write FUserString;
 
   constructor Create;
   destructor Destroy; override;
@@ -134,7 +126,7 @@ public
   // Basic
   procedure LoadInitializationComplete(ASourceID: TNodeID; ASourceAlias: Word);
   procedure LoadVerifyNodeIDAddressed(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word);
-  procedure LoadVerifyNodeID(ASourceID: TNodeID; ASourceAlias: Word);
+  procedure LoadVerifyNodeID(ASourceID: TNodeID; ASourceAlias: Word; OptionalTargetNodeID: TNodeID);
   procedure LoadVerifiedNodeID(ASourceID: TNodeID; ASourceAlias: Word);
   // Protocol Support (PIP)
   procedure LoadProtocolIdentifyInquiry(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word);
@@ -155,20 +147,20 @@ public
   procedure LoadTractionQuerySpeedReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; SetSpeed: THalfFloat; Status: Byte; CommandedSpeed, ActualSpeed: THalfFloat);
   procedure LoadTractionQueryFunction(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; Address: Word);
   procedure LoadTractionQueryFunctionReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; Address: Word; Value: Word);
-  procedure LoadTractionControllerAssign(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ANodeID: TNodeID; AnAlias: Word);
+  procedure LoadTractionControllerAssign(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AControllerNodeID: TNodeID; AControllerAlias: Word);
   procedure LoadTractionControllerAssignReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AResult: Byte);
   procedure LoadTractionControllerRelease(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ANodeID: TNodeID; AnAlias: Word);
   procedure LoadTractionControllerQuery(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word);
   procedure LoadTractionControllerQueryReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AControllerID: TNodeID; AControllerAlias: Word);
-  procedure LoadTractionControllerChangingNotify(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ANodeID: TNodeID; AnAlias: Word);
+  procedure LoadTractionControllerChangingNotify(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AControllerNodeID: TNodeID; AControllerAlias: Word);
   procedure LoadTractionControllerChangedReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; Allow: Boolean);
-  procedure LoadTractionListenerAttach(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerNodeID: TNodeID);
-  procedure LoadTractionListenerAttachReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerNodeID: TNodeID; ReplyCode: Word);
-  procedure LoadTractionListenerDetach(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerNodeID: TNodeID);
-  procedure LoadTractionListenerDetachReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerNodeID: TNodeID; ReplyCode: Word);
-  procedure LoadTractionListenerQuery(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerNodeID: TNodeID);
+  procedure LoadTractionListenerAttach(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AListenerNodeID: TNodeID);
+  procedure LoadTractionListenerAttachReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AListenerNodeID: TNodeID; ReplyCode: Word);
+  procedure LoadTractionListenerDetach(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AListenerNodeID: TNodeID);
+  procedure LoadTractionListenerDetachReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AListenerNodeID: TNodeID; ReplyCode: Word);
+  procedure LoadTractionListenerQuery(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AListenerNodeID: TNodeID);
   procedure LoadTractionListenerQueryReply_NoInfo(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word);
-  procedure LoadTractionListenerQueryReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerCount, ListenerNodeIndex: Byte; ListenerNodeID: TNodeID; Flags: Byte);
+  procedure LoadTractionListenerQueryReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerCount, ListenerNodeIndex: Byte; AListenerNodeID: TNodeID; Flags: Byte);
   procedure LoadTractionManage(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; Reserve: Boolean);
   procedure LoadTractionManageReply(ASourceID: TNodeID; ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; Accepted: Boolean);
 
@@ -244,7 +236,7 @@ var
 {$IFDEF FPC}
 function IsPrintableChar(C: Char): Boolean;
 begin
-  Result := ((Ord( C) >= 32) and (Ord( C) <= 126))  or ((Ord( C) >= 128) and (Ord( C) <= 255))
+  Result := ((Ord( C) >= 32) and (Ord( C) <= 126)) { or ((Ord( C) >= 128) and (Ord( C) <= 255)) }
 end;
 
 function MTI_ToString(MTI: DWord): String;
@@ -407,17 +399,17 @@ begin
 
   if AMessage.IsCAN then
   begin
-    if (AMessage.CAN.MTI and MTI_CAN_CIDX_MASK) = MTI_CAN_CID0 then Result := Result + 'CAN Check ID 0' else
-    if (AMessage.CAN.MTI and MTI_CAN_CIDX_MASK) = MTI_CAN_CID1 then Result := Result + 'CAN Check ID 1' else
-    if (AMessage.CAN.MTI and MTI_CAN_CIDX_MASK) = MTI_CAN_CID2 then Result := Result + 'CAN Check ID 2' else
-    if (AMessage.CAN.MTI and MTI_CAN_CIDX_MASK)  = MTI_CAN_CID3 then Result := Result + 'CAN Check ID 3' else
-    if (AMessage.CAN.MTI and MTI_CAN_CIDX_MASK) = MTI_CAN_CID4 then Result := Result + 'CAN Check ID 4' else
-    if (AMessage.CAN.MTI and MTI_CAN_CIDX_MASK) = MTI_CAN_CID5 then Result := Result + 'CAN Check ID 5' else
-    if (AMessage.CAN.MTI and MTI_CAN_CIDX_MASK) = MTI_CAN_CID6 then Result := Result + 'CAN Check ID 6' else
-    if (AMessage.CAN.MTI and MTI_CAN_MASK)  = MTI_CAN_RID then Result := Result + 'CAN Reserve ID' else
-    if (AMessage.CAN.MTI and MTI_CAN_MASK) = MTI_CAN_AMD then Result := Result + 'CAN Alias Map Definition' else
-    if (AMessage.CAN.MTI and MTI_CAN_MASK) = MTI_CAN_AME then Result := Result + 'CAN Alias Mapping Enquiry' else
-    if (AMessage.CAN.MTI and MTI_CAN_MASK) = MTI_CAN_AMR then Result := Result + 'CAN Alias Map Reset';
+    if AMessage.CAN.MTI = MTI_CAN_CID0 then Result := Result + 'CAN Check ID 0' else
+    if AMessage.CAN.MTI = MTI_CAN_CID1 then Result := Result + 'CAN Check ID 1' else
+    if AMessage.CAN.MTI = MTI_CAN_CID2 then Result := Result + 'CAN Check ID 2' else
+    if AMessage.CAN.MTI = MTI_CAN_CID3 then Result := Result + 'CAN Check ID 3' else
+    if AMessage.CAN.MTI = MTI_CAN_CID4 then Result := Result + 'CAN Check ID 4' else
+    if AMessage.CAN.MTI = MTI_CAN_CID5 then Result := Result + 'CAN Check ID 5' else
+    if AMessage.CAN.MTI = MTI_CAN_CID6 then Result := Result + 'CAN Check ID 6' else
+    if AMessage.CAN.MTI = MTI_CAN_RID then Result := Result + 'CAN Reserve ID' else
+    if AMessage.CAN.MTI = MTI_CAN_AMD then Result := Result + 'CAN Alias Map Definition' else
+    if AMessage.CAN.MTI = MTI_CAN_AME then Result := Result + 'CAN Alias Mapping Enquiry' else
+    if AMessage.CAN.MTI = MTI_CAN_AMR then Result := Result + 'CAN Alias Map Reset';
     Exit
   end;
 
@@ -426,12 +418,12 @@ begin
   else
     Result := Result + '0x' + IntToHex( AMessage.CAN.SourceAlias, 4);
 
-  if AMessage.IsDatagram then
+  if AMessage.MTI = MTI_DATAGRAM then
     Result := Result + RawHelperDataToStr(AMessage, True) + ' MTI: ' + MTI_ToString(AMessage.MTI)
   else
     Result := Result + '   MTI: ' + MTI_ToString(AMessage.MTI) + ' - ';
 
-  if AMessage.IsStream then
+  if AMessage.MTI = MTI_STREAM_SEND then
   begin
     case AMessage.MTI of
       MTI_STREAM_INIT_REQUEST            : Result := Result + ' Suggested Bufer Size: ' + IntToStr((AMessage.DataArray[2] shl 8) or AMessage.DataArray[3]) + ' Flags: 0x' + IntToHex(AMessage.DataArray[4], 2) + ' Additional Flags: 0x' + IntToHex(AMessage.DataArray[5], 2) + ' Source Stream ID: ' + IntToStr(AMessage.DataArray[6]);
@@ -638,14 +630,6 @@ end;
 
 {$ENDIF}
 
-{ TLccCANMessage }
-
-function TLccCANMessage.GetIsMultiFrame: Boolean;
-begin
-  Result := ((MTI >= MTI_CAN_FRAME_TYPE_DATAGRAM_FRAME_ONLY) and (MTI >= MTI_CAN_FRAME_TYPE_DATAGRAM_FRAME_ONLY)) or
-            (MTI = MTI_STREAM_SEND) or (MTI = MTI_SIMPLE_NODE_INFO_REPLY) or (FramingBits <> $00)
-end;
-
 { TLccMessage }
 
 procedure TLccMessage.AppendDataArray(LccMessage: TLccMessage);
@@ -749,16 +733,6 @@ end;
 function TLccMessage.GetHasSourceNodeID: Boolean;
 begin
   Result := (FSourceID[0] <> 0) and (FSourceID[1] <> 0)
-end;
-
-function TLccMessage.GetIsDatagram: Boolean;
-begin
-  Result := MTI = MTI_DATAGRAM;
-end;
-
-function TLccMessage.GetIsStream: Boolean;
-begin
-  Result := MTI = MTI_STREAM_SEND;
 end;
 
 constructor TLccMessage.Create;
@@ -874,6 +848,7 @@ var
   HeaderStr, DataStr, ByteStr: string;
   i, i_X, i_N, i_SemiColon, i_Data, len_Data, i_Data_Count: Integer;
   TempNodeID: TNodeID;
+  CANFrameType: DWord;
 begin
   Result := False;
 
@@ -922,12 +897,16 @@ begin
     // Extract the General OpenLCB message if possible
     if IsCAN then                                                       // IsCAN means CAN Frames OR OpenLCB message that are only on CAN (Datagrams frames and Stream Send)
     begin
-      if CAN.MTI and MTI_CAN_FRAME_TYPE_MASK < MTI_CAN_FRAME_TYPE_DATAGRAM_FRAME_ONLY then
+      CANFrameType := CAN.MTI and MTI_CAN_FRAME_TYPE_MASK;
+
+      if CANFrameType = MTI_CAN_CAN then     // the get the AME, AMD, AMR, RID, Error messages $007xx000
+        CAN.MTI := CAN.MTI and $0FFFF000
+      else
+      if CANFrameType <= MTI_CAN_CID0 then
+        CAN.MTI := CANFrameType
+      else
+      if (CANFrameType >= MTI_CAN_FRAME_TYPE_DATAGRAM_FRAME_ONLY) and (CANFrameType <= MTI_CAN_FRAME_TYPE_DATAGRAM_FRAME_END) then
       begin
-        CAN.MTI := CAN.MTI and MTI_CAN_CID_MASK;
-        MTI := 0;
-      end
-      else begin
         CAN.DestAlias := (CAN.MTI and $00FFF000) shr 12;
         CAN.MTI := CAN.MTI and $0F000000; // $FF000FFF;
         MTI := MTI_DATAGRAM
@@ -940,9 +919,15 @@ begin
         Assert(Length(DataStr) >= 4, 'Malformed message.  Address Present bit set but not enough bytes in the payload');
 
         ByteStr := DataStr[i_Data] + DataStr[i_Data+1];
-        {$IFDEF DWSCRIPT}DestHi := TDatatype.HexStrToInt('0x' + ByteStr);{$ELSE}DestHi := StrToInt( FormatStrToInt(ByteStr));{$ENDIF}
+        {$IFDEF DWSCRIPT}
+        DestHi := TDatatype.HexStrToInt('0x' + ByteStr);
         ByteStr := DataStr[i_Data+2] + DataStr[i_Data+3];
-        {$IFDEF DWSCRIPT}DestLo := TDatatype.HexStrToInt('0x' + ByteStr);{$ELSE}DestLo := StrToInt( FormatStrToInt(ByteStr));{$ENDIF}
+        DestLo := TDatatype.HexStrToInt('0x' + ByteStr);
+        {$ELSE}
+        DestHi := StrToInt( FormatStrToInt(ByteStr));
+        ByteStr := DataStr[i_Data+2] + DataStr[i_Data+3];
+        DestLo := StrToInt( FormatStrToInt(ByteStr));
+        {$ENDIF}
         Inc(i_Data, 4);            // First 4 in the Data where the MTI, move to the real payload (if it exisits)
         Dec(Len_Data, 4);
         CAN.FramingBits := DestHi and $30;
@@ -960,7 +945,11 @@ begin
     while i_Data < i_Data_Count do
     begin
       ByteStr := DataStr[i_Data] + DataStr[i_Data+1];
-      {$IFDEF DWSCRIPT}FDataArray[FDataCount] := TDatatype.HexStrToInt('0x' + ByteStr);{$ELSE}FDataArray[FDataCount] := StrToInt( FormatStrToInt(ByteStr));{$ENDIF}
+      {$IFDEF DWSCRIPT}
+      FDataArray[FDataCount] := TDatatype.HexStrToInt('0x' + ByteStr);
+      {$ELSE}
+      FDataArray[FDataCount] := StrToInt( FormatStrToInt(ByteStr));
+      {$ENDIF}
       Inc(i_Data, 2);
       Inc(FDataCount);
     end;
@@ -969,7 +958,8 @@ begin
       case CAN.MTI of
         MTI_CAN_AMD :
           begin
-            ExtractDataBytesAsNodeID(0, TempNodeID);   // SMS issue
+            TempNodeID := NULL_NODE_ID;
+            ExtractDataBytesAsNodeID(0, TempNodeID);   // SMS workaround
             FSourceID := TempNodeID;
           end;
       end;
@@ -1085,8 +1075,15 @@ begin
   end else
   begin
     if IsCAN then
-      LocalMTI := CAN.MTI or CAN.SourceAlias or $10000000
-    else
+    begin
+      LocalMTI := CAN.MTI or CAN.SourceAlias or $10000000;
+      case CAN.MTI of
+        MTI_CAN_CID0 : LocalMTI := LocalMTI or (SourceID[1] and $00FFF000);
+        MTI_CAN_CID1 : LocalMTI := LocalMTI or ((SourceID[1] shl 12) and $00FFF000);
+        MTI_CAN_CID2 : LocalMTI := LocalMTI or (SourceID[0] and $00FFF000);
+        MTI_CAN_CID3 : LocalMTI := LocalMTI or ((SourceID[0] shl 12) and $00FFF000);
+      end;
+    end else
       LocalMTI := DWord(( MTI shl 12) or CAN.SourceAlias or MTI_CAN_FRAME_TYPE_GENERAL or $10000000);
 
     if LocalMTI and MTI_CAN_FRAME_TYPE_MASK > MTI_CAN_FRAME_TYPE_GENERAL then
@@ -1312,11 +1309,12 @@ begin
   CAN.SourceAlias := ASourceAlias;
   IsCAN := True;
   SourceID := ASourceID;
+  // The NodeID bits will be added when converting to a gridconnect string
   case ACID of
-    0 : CAN.MTI := MTI_CAN_CID0 or DWord(ASourceAlias) or (ASourceID[1] and $00FFF000);
-    1 : CAN.MTI := MTI_CAN_CID1 or DWord(ASourceAlias) or ((ASourceID[1] shl 12) and $00FFF000);
-    2 : CAN.MTI := MTI_CAN_CID2 or DWord(ASourceAlias) or (ASourceID[0] and $00FFF000);
-    3 : CAN.MTI := MTI_CAN_CID3 or DWord(ASourceAlias) or ((ASourceID[0] shl 12) and $00FFF000);
+    0 : CAN.MTI := MTI_CAN_CID0;
+    1 : CAN.MTI := MTI_CAN_CID1;
+    2 : CAN.MTI := MTI_CAN_CID2;
+    3 : CAN.MTI := MTI_CAN_CID3;
   end;
 end;
 
@@ -1738,11 +1736,17 @@ begin
   end;
 end;
 
-procedure TLccMessage.LoadVerifyNodeID(ASourceID: TNodeID; ASourceAlias: Word);
+procedure TLccMessage.LoadVerifyNodeID(ASourceID: TNodeID; ASourceAlias: Word;
+  OptionalTargetNodeID: TNodeID);
 begin
   ZeroFields;
   SourceID := ASourceID;
   CAN.SourceAlias := ASourceAlias;
+  if not NullNodeID(OptionalTargetNodeID) then
+  begin
+    DataCount := 6;
+    InsertNodeID(0, OptionalTargetNodeID);
+  end;
   MTI := MTI_VERIFY_NODE_ID_NUMBER;
 end;
 
@@ -1985,30 +1989,30 @@ begin
 end;
 
 procedure TLccMessage.LoadTractionControllerAssign(ASourceID: TNodeID;
-  ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ANodeID: TNodeID;
-  AnAlias: Word);
+  ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AControllerNodeID: TNodeID;
+  AControllerAlias: Word);
 begin
   ZeroFields;
   SourceID := ASourceID;
   DestID := ADestID;
   CAN.SourceAlias := ASourceAlias;
   CAN.DestAlias := ADestAlias;
-  if AnAlias <> 0 then
+  if AControllerAlias <> 0 then
   begin
     DataCount := 11;
     FDataArray[0] := TRACTION_CONTROLLER_CONFIG;
     FDataArray[1] := TRACTION_CONTROLLER_CONFIG_ASSIGN;
     FDataArray[2] := TRACTION_FLAGS_ALIAS_INCLUDED;
-    InsertNodeID(3, ANodeID);
-    FDataArray[9] := Hi( AnAlias);
-    FDataArray[10] := Lo( AnAlias);
+    InsertNodeID(3, AControllerNodeID);
+    FDataArray[9] := Hi( AControllerAlias);
+    FDataArray[10] := Lo( AControllerAlias);
   end else
   begin
     DataCount := 9;
     FDataArray[0] := TRACTION_CONTROLLER_CONFIG;
     FDataArray[1] := TRACTION_CONTROLLER_CONFIG_ASSIGN;
     FDataArray[2] := 0;
-    InsertNodeID(3, ANodeID);
+    InsertNodeID(3, AControllerNodeID);
   end;
   MTI := MTI_TRACTION_REQUEST;
 end;
@@ -2105,30 +2109,30 @@ begin
 end;
 
 procedure TLccMessage.LoadTractionControllerChangingNotify(ASourceID: TNodeID;
-  ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ANodeID: TNodeID;
-  AnAlias: Word);
+  ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AControllerNodeID: TNodeID;
+  AControllerAlias: Word);
 begin
   ZeroFields;
   SourceID := ASourceID;
   DestID := ADestID;
   CAN.SourceAlias := ASourceAlias;
   CAN.DestAlias := ADestAlias;
-  if AnAlias <> 0 then
+  if AControllerAlias <> 0 then
   begin
     DataCount := 11;
     FDataArray[0] := TRACTION_CONTROLLER_CONFIG;
     FDataArray[1] := TRACTION_CONTROLLER_CONFIG_CHANGING_NOTIFY;
     FDataArray[2] := TRACTION_FLAGS_ALIAS_INCLUDED;
-    InsertNodeID(3, ANodeID);
-    FDataArray[9] := Hi( AnAlias);
-    FDataArray[10] := Lo( AnAlias);
+    InsertNodeID(3, AControllerNodeID);
+    FDataArray[9] := Hi( AControllerAlias);
+    FDataArray[10] := Lo( AControllerAlias);
   end else
   begin
     DataCount := 9;
     FDataArray[0] := TRACTION_CONTROLLER_CONFIG;
     FDataArray[1] := TRACTION_CONTROLLER_CONFIG_CHANGING_NOTIFY;
     FDataArray[2] := 0;
-    InsertNodeID(3, ANodeID);
+    InsertNodeID(3, AControllerNodeID);
   end;
   MTI := MTI_TRACTION_REQUEST;
 end;
@@ -2153,7 +2157,7 @@ end;
 
 procedure TLccMessage.LoadTractionListenerAttach(ASourceID: TNodeID;
   ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word;
-  ListenerNodeID: TNodeID);
+  AListenerNodeID: TNodeID);
 begin
   ZeroFields;
   SourceID := ASourceID;
@@ -2164,13 +2168,13 @@ begin
   FDataArray[0] := TRACTION_LISTENER;
   FDataArray[1] := TRACTION_LISTENER_ATTACH;
   FDataArray[2] := 0;
-  InsertNodeID(3, ListenerNodeID);
+  InsertNodeID(3, AListenerNodeID);
   MTI := MTI_TRACTION_REQUEST;
 end;
 
 procedure TLccMessage.LoadTractionListenerAttachReply(ASourceID: TNodeID;
   ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word;
-  ListenerNodeID: TNodeID; ReplyCode: Word);
+  AListenerNodeID: TNodeID; ReplyCode: Word);
 begin
   ZeroFields;
   SourceID := ASourceID;
@@ -2181,14 +2185,14 @@ begin
   FDataArray[0] := TRACTION_LISTENER;
   FDataArray[1] := TRACTION_LISTENER_ATTACH;
   FDataArray[2] := 0;
-  InsertNodeID(3, ListenerNodeID);
+  InsertNodeID(3, AListenerNodeID);
   FDataArray[8] := Hi(ReplyCode);
   FDataArray[9] := Lo(ReplyCode);
   MTI := MTI_TRACTION_REPLY;
 end;
 
 procedure TLccMessage.LoadTractionListenerDetach(ASourceID: TNodeID;
-  ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerNodeID: TNodeID);
+  ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AListenerNodeID: TNodeID);
 begin
   ZeroFields;
   SourceID := ASourceID;
@@ -2199,13 +2203,13 @@ begin
   FDataArray[0] := TRACTION_LISTENER;
   FDataArray[1] := TRACTION_LISTENER_DETACH;
   FDataArray[2] := 0;
-  InsertNodeID(3, ListenerNodeID);
+  InsertNodeID(3, AListenerNodeID);
   MTI := MTI_TRACTION_REQUEST;
 end;
 
 procedure TLccMessage.LoadTractionListenerDetachReply(ASourceID: TNodeID;
   ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word;
-  ListenerNodeID: TNodeID; ReplyCode: Word);
+  AListenerNodeID: TNodeID; ReplyCode: Word);
 begin
   ZeroFields;
   SourceID := ASourceID;
@@ -2216,14 +2220,14 @@ begin
   FDataArray[0] := TRACTION_LISTENER;
   FDataArray[1] := TRACTION_LISTENER_DETACH;
   FDataArray[2] := 0;
-  InsertNodeID(3, ListenerNodeID);
+  InsertNodeID(3, AListenerNodeID);
   FDataArray[8] := Hi(ReplyCode);
   FDataArray[9] := Lo(ReplyCode);
   MTI := MTI_TRACTION_REPLY;
 end;
 
 procedure TLccMessage.LoadTractionListenerQuery(ASourceID: TNodeID;
-  ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerNodeID: TNodeID);
+  ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; AListenerNodeID: TNodeID);
 begin
   ZeroFields;
   SourceID := ASourceID;
@@ -2234,7 +2238,7 @@ begin
   FDataArray[0] := TRACTION_LISTENER;
   FDataArray[1] := TRACTION_LISTENER_QUERY;
   FDataArray[2] := 0;
-  InsertNodeID(3, ListenerNodeID);
+  InsertNodeID(3, AListenerNodeID);
   MTI := MTI_TRACTION_REQUEST;
 end;
 
@@ -2252,14 +2256,14 @@ end;
 
 procedure TLccMessage.LoadTractionListenerQueryReply(ASourceID: TNodeID;
   ASourceAlias: Word; ADestID: TNodeID; ADestAlias: Word; ListenerCount,
-  ListenerNodeIndex: Byte; ListenerNodeID: TNodeID; Flags: Byte);
+  ListenerNodeIndex: Byte; AListenerNodeID: TNodeID; Flags: Byte);
 begin
   ZeroFields;
   SourceID := ASourceID;
   DestID := ADestID;
   CAN.SourceAlias := ASourceAlias;
   CAN.DestAlias := ADestAlias;
-  if NullNodeID(ListenerNodeID) then
+  if NullNodeID(AListenerNodeID) then
   begin
     DataCount := 3;
     FDataArray[0] := TRACTION_LISTENER;
@@ -2273,7 +2277,7 @@ begin
     FDataArray[2] := ListenerCount;
     FDataArray[3] := ListenerNodeIndex;
     FDataArray[4] := Flags;
-    InsertNodeID(5, ListenerNodeID);
+    InsertNodeID(5, AListenerNodeID);
   end;
   MTI := MTI_TRACTION_REPLY;
 end;
